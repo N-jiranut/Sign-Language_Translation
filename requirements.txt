@@ -1,0 +1,9 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+mediapipe==1.2.0
+opencv-contrib-python==5.0.0.93
+numpy==2.5.4
+scikit-learn==1.9.0
+torch==2.14.1+cpu
+joblib==1.6.0
+matplotlib==3.11.2
+pyserial==3.5
