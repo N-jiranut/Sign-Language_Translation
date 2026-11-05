@@ -10,6 +10,15 @@ MP_MODEL_DIR = ROOT / "models" / "mediapipe"
 HAND_MODEL_PATH = MP_MODEL_DIR / "hand_landmarker.task"
 POSE_MODEL_PATH = MP_MODEL_DIR / "pose_landmarker_lite.task"
 
+DATA_DIR = ROOT / "data"
+DATA_RAW_DIR = DATA_DIR / "raw"
+DATA_PROCESSED_DIR = DATA_DIR / "processed"
+MODEL_DIR = ROOT / "models"
+SAVED_SKLEARN_MODEL = MODEL_DIR / "rf.pkl"
+SAVED_TORCH_MODEL = MODEL_DIR / "gru.pt"
+SAVED_LABELS = MODEL_DIR / "labels.json"
+SAVED_SCALER = MODEL_DIR / "scaler.pkl"
+
 HAND_MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
     "hand_landmarker/float16/latest/hand_landmarker.task"
@@ -18,6 +27,11 @@ POSE_MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
     "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
 )
+
+# ---------- Sequence & Feature Settings ----------
+TARGET_FRAMES = 24        # แต่ละท่าถูก resample ให้มีความยาว 24 เฟรม
+NUM_FEATURES = 112        # 13 pose (26) + 21*2 hands (84) + 2 flags = 112
+DEFAULT_PERSON = "p1"
 
 # ---------- Camera / กล้อง ----------
 CAMERA_INDEX = 0          # เปลี่ยนเป็น 1, 2 ถ้ามีหลายกล้อง
