@@ -86,7 +86,7 @@ def split_dataset(X, y, groups, test_size=0.2, random_state=42):
     """
     Split dataset into train and test sets.
     If multiple signers exist, splits by group (person).
-    Otherwise, uses stratified random split.
+    Otherwise, uses stratified random split (falls back to random split if samples are too few).
     """
     unique_groups = np.unique(groups)
     if len(unique_groups) > 1:
@@ -95,12 +95,16 @@ def split_dataset(X, y, groups, test_size=0.2, random_state=42):
         train_idx, test_idx = next(gss.split(X, y, groups=groups))
         print(f"[Split] Group split by signers {unique_groups}: {len(train_idx)} train, {len(test_idx)} test")
     else:
-        # Single signer: stratified split
         indices = np.arange(len(X))
+        unique_classes, counts = np.unique(y, return_counts=True)
+        can_stratify = len(unique_classes) > 1 and np.min(counts) >= 2 and (len(X) * test_size) >= len(unique_classes)
+        strat = y if can_stratify else None
+
         train_idx, test_idx = train_test_split(
-            indices, test_size=test_size, stratify=y, random_state=random_state
+            indices, test_size=test_size, stratify=strat, random_state=random_state
         )
-        print(f"[Split] Stratified split: {len(train_idx)} train, {len(test_idx)} test")
+        mode_str = "Stratified split" if can_stratify else "Random split (insufficient samples for stratification)"
+        print(f"[Split] {mode_str}: {len(train_idx)} train, {len(test_idx)} test")
 
     return X[train_idx], X[test_idx], y[train_idx], y[test_idx]
 

@@ -1,2 +1,6 @@
-.venv
-models/mediapipe
+.venv/
+__pycache__/
+*.pyc
+*/__pycache__/
+models/mediapipe/
+results/camera_check/

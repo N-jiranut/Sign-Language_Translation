@@ -1,4 +1,6 @@
 {
-  "test1": 0,
-  "test2": 1
+  "hello": 0,
+  "no": 1,
+  "thank_you": 2,
+  "yes": 3
 }
