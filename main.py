@@ -3,6 +3,9 @@ Main Launcher for KMUTT Sign Language Translation System.
 Provides a central entrypoint to run the English Dual-Pane GUI,
 or execute data collection and training scripts.
 
+Automatically detects and switches to the project's virtual environment (.venv)
+if launched from global Python.
+
 Usage:
     python main.py               # Launches the full Desktop GUI Application
     python main.py --app         # Launches the full Desktop GUI Application
@@ -17,6 +20,23 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+# --------------------------------------------------------------------------
+# Auto-Venv Detection & Seamless Re-Routing
+# If launched with global Python (e.g. Python 3.14 without packages),
+# automatically re-route execution into the project's .venv environment.
+# --------------------------------------------------------------------------
+VENV_PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
+if VENV_PYTHON.exists():
+    try:
+        curr_py = Path(sys.executable).resolve()
+        target_py = VENV_PYTHON.resolve()
+        if curr_py != target_py:
+            cmd = [str(target_py)] + sys.argv
+            sys.exit(subprocess.call(cmd))
+    except Exception as _e:
+        pass
+
 SRC = ROOT / "src"
 for p in (ROOT, SRC):
     if str(p) not in sys.path:

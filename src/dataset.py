@@ -8,7 +8,12 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from sklearn.model_selection import GroupShuffleSplit, train_test_split
+
+try:
+    from sklearn.model_selection import GroupShuffleSplit, train_test_split
+except ImportError:
+    GroupShuffleSplit = None
+    train_test_split = None
 
 _DIR = Path(__file__).resolve().parent
 for _p in (str(_DIR), str(_DIR.parent)):
@@ -62,7 +67,6 @@ def load_raw_dataset(data_dir=config.DATA_RAW_DIR, target_frames=config.TARGET_F
 
                 # Extract person ID from filename pattern: <person>_<ts>...
                 stem = f.stem
-                # Check for timestamp pattern at the end: _\d{10,}
                 m = re.match(r"^(.*?)(?:_\d{10,})", stem)
                 person = m.group(1) if m else stem.split("_")[0]
                 if not person:
@@ -109,17 +113,23 @@ def split_dataset(X, y, groups=None, test_size=0.2, random_state=42):
     - Otherwise, uses Stratified Split whenever each class has >= 2 samples.
     - Falls back gracefully to random split if stratification is impossible.
     """
+    if train_test_split is None:
+        raise ImportError(
+            "scikit-learn is required for split_dataset.\n"
+            "Please ensure you run using the project virtual environment:\n"
+            "  .\\.venv\\Scripts\\python.exe"
+        )
+
     indices = np.arange(len(X))
     unique_classes, counts = np.unique(y, return_counts=True)
     min_count = int(np.min(counts)) if len(counts) > 0 else 0
 
     # Try Group split only if we have sufficient independent signers
-    if groups is not None:
+    if groups is not None and GroupShuffleSplit is not None:
         unique_groups = np.unique(groups)
         if len(unique_groups) >= 3:
             gss = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=random_state)
             tr_idx, te_idx = next(gss.split(X, y, groups=groups))
-            # Verify that all classes exist in both train and test
             if len(np.unique(y[tr_idx])) == len(unique_classes) and len(np.unique(y[te_idx])) == len(unique_classes):
                 print(f"[Split] Group split by signers {unique_groups}: {len(tr_idx)} train, {len(te_idx)} test")
                 return X[tr_idx], X[te_idx], y[tr_idx], y[te_idx]
@@ -127,7 +137,6 @@ def split_dataset(X, y, groups=None, test_size=0.2, random_state=42):
     # Stratified split
     if len(unique_classes) > 1 and min_count >= 2:
         n_classes = len(unique_classes)
-        # Allocate at least 1 sample per class to test, but leave at least 1 per class in train
         desired_test = int(np.ceil(len(X) * test_size))
         n_test = max(n_classes, desired_test)
         if n_test <= len(X) - n_classes:
