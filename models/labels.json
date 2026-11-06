@@ -1,7 +1,8 @@
 {
-  "hello": 0,
-  "no": 1,
-  "sorry": 2,
-  "thank_you": 3,
-  "yes": 4
+  "cheer": 0,
+  "hello": 1,
+  "no": 2,
+  "sorry": 3,
+  "thank_you": 4,
+  "yes": 5
 }
