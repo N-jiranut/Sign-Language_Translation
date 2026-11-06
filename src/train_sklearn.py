@@ -8,9 +8,13 @@ import joblib
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_DIR = Path(__file__).resolve().parent
+for _p in (str(_DIR), str(_DIR.parent)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import config
-from dataset import load_raw_dataset, split_dataset, save_label_mapping
+from dataset import load_raw_dataset, split_dataset, save_label_mapping, augment_dataset
 
 
 def flatten_features(X):
@@ -42,6 +46,11 @@ def main():
 
     # Train/Test Split
     X_train, X_test, y_train, y_test = split_dataset(X, y, groups, test_size=0.2)
+
+    # Augment compact training sets
+    if len(X_train) < 50:
+        X_train, y_train = augment_dataset(X_train, y_train, num_copies=1, noise_std=0.015)
+        print(f"[Augmentation] Augmented training set size: {len(X_train)} samples")
 
     # Flatten temporal dimensions for Random Forest
     X_train_flat = flatten_features(X_train)

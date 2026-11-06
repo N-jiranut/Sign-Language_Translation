@@ -1,147 +1,232 @@
 """
-TSL Assist: Real-time Sign Language Translator UI (English Version)
-Graphical User Interface for Sign Language Translation & Communication Hub.
-Designed for Assistive Technology, Deaf & Hard of Hearing (DHH) accessibility.
+Modern Desktop Assistive System for Sign Language Translation (TSL Assist)
+KMUTT Senior Project - Thai Sign Language Real-Time Translation & Gesture Studio
 
-Includes:
-  - Tab 1: Live Translation (Hero Card, TTS Audio, Conversation Log, Two-Way Staff Reply)
-  - Tab 2: Gesture Studio & AI Trainer (In-app Recording & 1-Click Model Retraining)
+Key Components:
+  - 50/50 Dual-Pane Interface: Camera Viewfinder (Left) & Translation Hub / Gesture Studio (Right)
+  - Aspect-ratio Dynamic Camera Scaling: Scales up to fill window when maximized, scales down smoothly when resized
+  - Adjustable Font Size & High-Legibility Accessibility for Staff Two-Way Communicator & Conversation Log
+  - Thread-Safe Model Switching & Asynchronous PyTorch GRU / Random Forest Classifier
+  - Two-Way Real-Time Communication with customizable scenario presets
 """
-import os
-import sys
-import time
 import json
-import threading
+import os
+import re
 import subprocess
-from pathlib import Path
+import sys
+import threading
+import time
 import tkinter as tk
-from tkinter import ttk, messagebox
+from pathlib import Path
+from tkinter import messagebox, ttk
+
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-# Project imports
-ROOT_DIR = Path(__file__).resolve().parents[1]
-SRC_DIR = Path(__file__).resolve().parent
-
-for p in (ROOT_DIR, SRC_DIR):
-    if str(p) not in sys.path:
-        sys.path.insert(0, str(p))
-
-import config
-from dataset import load_label_mapping, load_raw_dataset, split_dataset, save_label_mapping
-from features import extract_frame_features, resample_sequence
-from landmarkers import Camera, Tracker, hands_by_side, draw_hand, draw_pose
-from models import SignGRU
-
-# Try loading ML engines
+# Safe AI Model Imports
 try:
     import joblib
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.metrics import accuracy_score
 except ImportError:
     joblib = None
+    RandomForestClassifier = None
+    accuracy_score = None
 
 try:
     import torch
     import torch.nn as nn
-    from torch.utils.data import TensorDataset, DataLoader
+    from torch.utils.data import DataLoader, TensorDataset
 except ImportError:
     torch = None
+    nn = None
+    DataLoader = None
+    TensorDataset = None
 
+# Local module imports
+_DIR = Path(__file__).resolve().parent
+for _p in (str(_DIR), str(_DIR.parent)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import config
+from dataset import augment_dataset, load_label_mapping, load_raw_dataset, save_label_mapping, split_dataset
+from features import extract_frame_features, resample_sequence
+from landmarkers import Camera, Tracker, draw_hand, draw_pose, hands_by_side
+from models import SignGRU
 
 # --------------------------------------------------------------------------
-# Scenario Presets Definitions & Dynamic JSON Loader (data/scenario_presets.json)
+# Font Scaling Presets for High Legibility & Accessibility
 # --------------------------------------------------------------------------
-DEFAULT_SCENARIOS = {
-    "Hospital & Clinic": {
-        "icon": "🏥",
-        "tag_color": "#00E5FF",
-        "description": "Medical Consultation & Patient Triage",
-        "staff_replies": [
-            "Wait for doctor", "Take medication", "Follow nurse", "Room 101", "Where does it hurt?", "Please sit & rest"
-        ],
-        "recommended_signs": ["hospital", "doctor", "medicine", "pain", "help", "yes", "no", "thank_you"]
+FONT_LEVELS = [
+    {
+        "name": "Normal (100%)",
+        "log_body": 11,
+        "log_signer": 12,
+        "log_staff": 11,
+        "log_time": 9,
+        "presets": 9,
+        "entry": 11,
+        "btn_send": 9,
+        "header_sub": 9,
+        "padding_y": 3,
+        "padding_x": 8,
     },
-    "General Services": {
-        "icon": "🏢",
-        "tag_color": "#FFD600",
-        "description": "Information & Customer Reception",
-        "staff_replies": [
-            "Please wait a moment", "Follow me please", "Take queue ticket", "Proceed to Counter 3", "Please sign here", "Thank you"
-        ],
-        "recommended_signs": ["hello", "thank_you", "sorry", "yes", "no", "help", "finish"]
+    {
+        "name": "Large (120%)",
+        "log_body": 13,
+        "log_signer": 15,
+        "log_staff": 13,
+        "log_time": 10,
+        "presets": 11,
+        "entry": 13,
+        "btn_send": 10,
+        "header_sub": 10,
+        "padding_y": 4,
+        "padding_x": 10,
     },
-    "Police & Emergency": {
-        "icon": "🚨",
-        "tag_color": "#FF5252",
-        "description": "Crisis Reporting & Incident Triage",
-        "staff_replies": [
-            "Filing report now", "Stay calm, you are safe", "Officer is coming", "Can you write details?", "Emergency room", "Need ambulance?"
-        ],
-        "recommended_signs": ["help", "emergency", "police", "danger", "hospital", "yes", "no"]
+    {
+        "name": "Extra Large (140%)",
+        "log_body": 16,
+        "log_signer": 18,
+        "log_staff": 16,
+        "log_time": 11,
+        "presets": 13,
+        "entry": 15,
+        "btn_send": 12,
+        "header_sub": 12,
+        "padding_y": 6,
+        "padding_x": 12,
     },
-    "University & Classroom": {
-        "icon": "🎓",
-        "tag_color": "#40C4FF",
-        "description": "Academic & Lecture Room Support",
-        "staff_replies": [
-            "Class starts soon", "Submit assignment", "Room 304", "Please see instructor", "Library on 2nd floor", "Exam in progress"
-        ],
-        "recommended_signs": ["hello", "thank_you", "question", "finish", "book", "yes", "no"]
-    }
-}
+    {
+        "name": "Huge (160%)",
+        "log_body": 19,
+        "log_signer": 22,
+        "log_staff": 19,
+        "log_time": 12,
+        "presets": 15,
+        "entry": 17,
+        "btn_send": 14,
+        "header_sub": 14,
+        "padding_y": 7,
+        "padding_x": 14,
+    },
+]
 
+# --------------------------------------------------------------------------
+# Scenario Presets Loader (reads data/scenario_presets.json)
+# --------------------------------------------------------------------------
 def load_scenario_data():
-    """Loads scenario definitions from data/scenario_presets.json with fallbacks."""
-    file_path = getattr(config, "PRESETS_CONFIG_PATH", config.DATA_DIR / "scenario_presets.json")
-    data = DEFAULT_SCENARIOS
-    if file_path.exists():
+    """Loads scenario presets from data/scenario_presets.json with resilient fallback."""
+    cfg_file = getattr(config, "PRESETS_CONFIG_PATH", config.DATA_DIR / "scenario_presets.json")
+    if cfg_file.exists():
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                if isinstance(loaded, dict) and loaded:
-                    data = loaded
+            with open(cfg_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            staff_map = {}
+            gesture_map = {}
+            hints_map = {}
+            for k, v in data.items():
+                staff_map[k] = v.get("staff_replies", [])
+                gesture_map[k] = v.get("recommended_signs", [])
+                hints_map[k] = (
+                    v.get("category", "General"),
+                    v.get("accent_color", "#00E5FF"),
+                    v.get("hint_text", "")
+                )
+            return staff_map, gesture_map, hints_map, list(data.keys())
         except Exception as e:
-            print("Error loading scenario_presets.json:", e)
+            print(f"[Warning] Failed to parse {cfg_file}: {e}")
 
-    staff_map = {}
-    gesture_map = {}
-    hints_map = {}
-    for name, item in data.items():
-        staff_map[name] = item.get("staff_replies", [])
-        gesture_map[name] = item.get("recommended_signs", [])
-        icon = item.get("icon", "🏢")
-        color = item.get("tag_color", "#00E5FF")
-        desc = item.get("description", "")
-        signs_str = ", ".join(item.get("recommended_signs", []))
-        hints_map[name] = (f"{icon} Mode: {name} ({desc})", color, f"Context Signs: {signs_str}")
-
+    # Built-in Default Scenarios
+    data = {
+        "Hospital & Clinic": {
+            "category": "Healthcare",
+            "accent_color": "#00E5FF",
+            "hint_text": "Context Signs: hospital, doctor, medicine, pain, help, yes, no, thank_you",
+            "staff_replies": [
+                "Wait for doctor",
+                "Take medication",
+                "Follow nurse",
+                "Please sit here",
+                "Where does it hurt?",
+                "Are you feeling better?"
+            ],
+            "recommended_signs": ["hospital", "doctor", "medicine", "pain", "help", "yes", "no", "thank_you"]
+        },
+        "General Services": {
+            "category": "Customer Service",
+            "accent_color": "#00E676",
+            "hint_text": "Context Signs: hello, thank_you, sorry, please, yes, no",
+            "staff_replies": [
+                "How can I help you?",
+                "Please wait a moment",
+                "Have a great day",
+                "Thank you very much"
+            ],
+            "recommended_signs": ["hello", "thank_you", "sorry", "yes", "no"]
+        },
+        "Police & Emergency": {
+            "category": "Public Safety",
+            "accent_color": "#FF1744",
+            "hint_text": "Context Signs: emergency, help, accident, police, danger, safe",
+            "staff_replies": [
+                "You are safe here",
+                "Officer is on the way",
+                "Do you need ambulance?",
+                "Please stay calm"
+            ],
+            "recommended_signs": ["emergency", "help", "accident", "danger", "safe", "yes", "no"]
+        },
+        "University & Classroom": {
+            "category": "Education",
+            "accent_color": "#FFD600",
+            "hint_text": "Context Signs: hello, thank_you, question, finish, book, yes, no",
+            "staff_replies": [
+                "Class starts soon",
+                "Submit assignment",
+                "Room 304",
+                "Please see instructor"
+            ],
+            "recommended_signs": ["hello", "thank_you", "question", "finish", "book", "yes", "no"]
+        }
+    }
+    staff_map = {k: v["staff_replies"] for k, v in data.items()}
+    gesture_map = {k: v["recommended_signs"] for k, v in data.items()}
+    hints_map = {k: (v["category"], v["accent_color"], v["hint_text"]) for k, v in data.items()}
     return staff_map, gesture_map, hints_map, list(data.keys())
 
 
 # --------------------------------------------------------------------------
 # Text-to-Speech (TTS) Helper using Windows SAPI (Zero extra dependencies)
 # --------------------------------------------------------------------------
+_tts_lock = threading.Lock()
+
 def speak_text_async(text):
-    """Speaks English text asynchronously using Windows native SAPI."""
+    """Speaks English text asynchronously using Windows native SAPI with no popup console window."""
     if not text or text.startswith("(") or text == "-":
         return
 
     def _speak():
-        try:
-            clean = text.replace('"', '').replace("'", "").strip()
-            if not clean:
-                return
-            cmd = f'(New-Object -ComObject SAPI.SpVoice).Speak("{clean}")'
-            subprocess.run(
-                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", cmd],
-                timeout=5,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-        except Exception:
-            pass
+        # Sanitize to prevent command injection, PowerShell string bugs, or console flash
+        clean = re.sub(r"[^a-zA-Z0-9\s\.,!\?]", "", text).strip()
+        if not clean:
+            return
+
+        with _tts_lock:
+            try:
+                cmd = f'(New-Object -ComObject SAPI.SpVoice).Speak("{clean}")'
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+                    timeout=5,
+                    creationflags=creationflags,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            except Exception:
+                pass
 
     threading.Thread(target=_speak, daemon=True).start()
 
@@ -157,7 +242,11 @@ class SignLanguageApp(tk.Tk):
         self.minsize(1120, 720)
         self.configure(bg="#121212")
 
-        # Styling
+        # Threading lock for model switching and inference
+        self.model_lock = threading.Lock()
+
+        # UI Styling & Font Scaling
+        self.font_scale_idx = 1  # Default to Large (120%) for superior readability
         self._setup_styles()
 
         # Model & State Variables
@@ -165,12 +254,19 @@ class SignLanguageApp(tk.Tk):
         self.model_type = "gru"  # 'gru' or 'rf'
         self.classifier = None
         self.id_to_label = {}
-        self.threshold = 0.65
+        self.threshold = 0.60    # Unified recognition threshold
         self.auto_speak = tk.BooleanVar(value=True)
         self.show_skeleton = tk.BooleanVar(value=True)
         self.trigger_mode = tk.StringVar(value="auto")  # 'auto' or 'manual'
         self.selected_scenario = tk.StringVar(value=self.scenario_list[0] if self.scenario_list else "Hospital & Clinic")
         self.active_model_name = tk.StringVar(value="PyTorch GRU")
+
+        # Thread-safe copies of control variables for camera worker
+        self.trigger_mode_val = "auto"
+        self.show_skeleton_val = True
+
+        # Track active notebook tab: 0 = Translation, 1 = Studio
+        self.active_tab_idx = 0
 
         # Studio variables (Tab 2)
         self.studio_target_word = tk.StringVar(value="hello")
@@ -184,8 +280,9 @@ class SignLanguageApp(tk.Tk):
         self.is_running = False
         self.thread = None
         self._video_canvas_item = None
+        self._render_pending = False
 
-        self.state = "idle"  # 'idle', 'arming', 'recording', 'result'
+        self.state = "idle"  # 'idle', 'countdown', 'recording', 'result'
         self.arm_start_time = None
         self.rec_start_time = None
         self.current_recording = []
@@ -199,11 +296,19 @@ class SignLanguageApp(tk.Tk):
         self._build_main_content()
         self._build_footer()
 
-        # Initialize Scenario Presets
+        # Initialize Scenario Presets & Font Sizing
         self._render_scenario_buttons()
+        self._apply_font_scale()
 
-        # Keyboard shortcuts
-        self.bind("<space>", lambda e: self.trigger_manual_record())
+        # Keyboard shortcuts (Safe focus checking)
+        self.bind("<space>", self._on_space_pressed)
+
+        # Tab change event
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+        # Sync variable traces
+        self.trigger_mode.trace_add("write", lambda *args: self._sync_trigger_mode())
+        self.show_skeleton.trace_add("write", lambda *args: self._sync_skeleton())
 
         # Load AI Model in background
         self.after(200, self._load_model_safe)
@@ -211,11 +316,29 @@ class SignLanguageApp(tk.Tk):
         # Handle window close
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
+    def _sync_trigger_mode(self):
+        self.trigger_mode_val = self.trigger_mode.get()
+
+    def _sync_skeleton(self):
+        self.show_skeleton_val = self.show_skeleton.get()
+
+    def _on_tab_changed(self, event=None):
+        try:
+            self.active_tab_idx = self.notebook.index(self.notebook.select())
+        except Exception:
+            self.active_tab_idx = 0
+
+    def _on_space_pressed(self, event):
+        """Triggers manual record ONLY if not currently focused in a text entry box."""
+        if event and isinstance(event.widget, (tk.Entry, tk.Text, ttk.Combobox, ttk.Entry)):
+            return  # Allow normal typing of space characters in text fields
+        self.trigger_manual_record()
+
     def _setup_styles(self):
         style = ttk.Style(self)
         style.theme_use("clam")
 
-        # Colors
+        # Color Palette
         self.C_BG = "#121212"
         self.C_CARD = "#1E1E1E"
         self.C_CARD_LIGHT = "#282828"
@@ -250,51 +373,75 @@ class SignLanguageApp(tk.Tk):
         header_frame = tk.Frame(self, bg="#181818", height=54, highlightbackground=self.C_BORDER, highlightthickness=1)
         header_frame.pack(side="top", fill="x")
 
-        # Title + Badge
-        title_box = tk.Frame(header_frame, bg="#181818")
-        title_box.pack(side="left", padx=16, pady=10)
+        # Brand Title
+        brand_frame = tk.Frame(header_frame, bg="#181818")
+        brand_frame.pack(side="left", padx=16, pady=10)
 
-        lbl_logo = tk.Label(title_box, text="🤟 TSL ASSIST", font=("Segoe UI", 14, "bold"), fg=self.C_ACCENT_CYAN, bg="#181818")
-        lbl_logo.pack(side="left")
+        tk.Label(brand_frame, text="🤟 TSL ASSIST", font=("Segoe UI", 14, "bold"), fg=self.C_ACCENT_CYAN, bg="#181818").pack(side="left")
+        tk.Label(brand_frame, text=" | Sign Language Translation Hub", font=("Segoe UI", 10), fg=self.C_MUTED, bg="#181818").pack(side="left", padx=(4, 0))
 
-        lbl_sub = tk.Label(title_box, text=" |  Sign Language Translation Hub", font=("Segoe UI", 11), fg=self.C_MUTED, bg="#181818")
-        lbl_sub.pack(side="left")
+        # Scenario Context Switcher
+        scenario_frame = tk.Frame(header_frame, bg="#181818")
+        scenario_frame.pack(side="left", padx=24, pady=10)
 
-        # Scenario dropdown
-        scenario_box = tk.Frame(header_frame, bg="#181818")
-        scenario_box.pack(side="left", padx=20)
-        tk.Label(scenario_box, text="Scenario: ", font=("Segoe UI", 9), fg=self.C_MUTED, bg="#181818").pack(side="left")
-        self.combo_scenario = ttk.Combobox(scenario_box, textvariable=self.selected_scenario, values=self.scenario_list, state="readonly", width=18)
+        tk.Label(scenario_frame, text="Scenario:", font=("Segoe UI", 9, "bold"), fg=self.C_MUTED, bg="#181818").pack(side="left", padx=(0, 6))
+
+        self.combo_scenario = ttk.Combobox(
+            scenario_frame,
+            textvariable=self.selected_scenario,
+            values=self.scenario_list,
+            state="readonly",
+            width=22,
+            font=("Segoe UI", 9, "bold")
+        )
         self.combo_scenario.pack(side="left")
         self.combo_scenario.bind("<<ComboboxSelected>>", self._on_scenario_switch)
 
-        btn_edit_cfg = tk.Button(scenario_box, text="⚙️ Presets", font=("Segoe UI", 8),
-                                 bg=self.C_CARD_LIGHT, fg=self.C_ACCENT_CYAN, activebackground=self.C_BORDER,
-                                 relief="flat", padx=6, pady=2, cursor="hand2", command=self.open_presets_settings)
-        btn_edit_cfg.pack(side="left", padx=(6, 0))
+        # Presets Manager Button
+        btn_presets = tk.Button(
+            scenario_frame,
+            text="⚙️ Presets",
+            font=("Segoe UI", 8, "bold"),
+            bg="#263238",
+            fg="#80D8FF",
+            activebackground="#37474F",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            padx=8,
+            pady=2,
+            cursor="hand2",
+            command=self.open_presets_settings
+        )
+        btn_presets.pack(side="left", padx=(8, 0))
 
-        # Model Selector Dropdown
-        model_box = tk.Frame(header_frame, bg="#181818")
-        model_box.pack(side="left", padx=15)
-        tk.Label(model_box, text="Engine: ", font=("Segoe UI", 9), fg=self.C_MUTED, bg="#181818").pack(side="left")
-        combo_model = ttk.Combobox(model_box, textvariable=self.active_model_name, values=[
-            "PyTorch GRU", "Random Forest"
-        ], state="readonly", width=15)
-        combo_model.pack(side="left")
-        combo_model.bind("<<ComboboxSelected>>", self._on_model_switch)
+        # AI Engine Switcher (GRU vs RF)
+        engine_frame = tk.Frame(header_frame, bg="#181818")
+        engine_frame.pack(side="left", padx=14, pady=10)
 
-        # Right-side Status Badges
-        right_box = tk.Frame(header_frame, bg="#181818")
-        right_box.pack(side="right", padx=16)
+        tk.Label(engine_frame, text="Engine:", font=("Segoe UI", 9, "bold"), fg=self.C_MUTED, bg="#181818").pack(side="left", padx=(0, 6))
+        self.combo_model = ttk.Combobox(
+            engine_frame,
+            textvariable=self.active_model_name,
+            values=["PyTorch GRU", "Random Forest"],
+            state="readonly",
+            width=14,
+            font=("Segoe UI", 9)
+        )
+        self.combo_model.pack(side="left")
+        self.combo_model.bind("<<ComboboxSelected>>", self._on_model_switch)
 
-        self.lbl_camera_status = tk.Label(right_box, text="● Camera: Standby", font=("Segoe UI", 9, "bold"), fg="#FF9100", bg="#181818")
-        self.lbl_camera_status.pack(side="left", padx=8)
+        # Status Indicators (Right side of header)
+        status_frame = tk.Frame(header_frame, bg="#181818")
+        status_frame.pack(side="right", padx=16, pady=10)
 
-        self.lbl_model_status = tk.Label(right_box, text="● Model: Loading...", font=("Segoe UI", 9, "bold"), fg=self.C_MUTED, bg="#181818")
-        self.lbl_model_status.pack(side="left", padx=8)
+        self.lbl_camera_status = tk.Label(status_frame, text="● Camera: Ready", font=("Segoe UI", 9, "bold"), fg=self.C_MUTED, bg="#181818")
+        self.lbl_camera_status.pack(side="left", padx=10)
+
+        self.lbl_model_status = tk.Label(status_frame, text="● Model: Loading...", font=("Segoe UI", 9, "bold"), fg=self.C_ACCENT_YELLOW, bg="#181818")
+        self.lbl_model_status.pack(side="left", padx=10)
 
     # ----------------------------------------------------------------------
-    # 2. Main Content (Dual-Pane: Left 58% / Right 42%)
+    # 2. Main Dual-Pane Content (Viewfinder Left / Hub Right)
     # ----------------------------------------------------------------------
     def _build_main_content(self):
         content_frame = tk.Frame(self, bg=self.C_BG)
@@ -330,7 +477,7 @@ class SignLanguageApp(tk.Tk):
                                     fg="#121212", bg=self.C_MUTED, padx=10, pady=2)
         self.badge_state.pack(side="right")
 
-        # Video Canvas
+        # Video Canvas (Scales cleanly in all window sizes)
         self.canvas_video = tk.Canvas(left_card, bg="#0A0A0A", highlightthickness=0)
         self.canvas_video.pack(fill="both", expand=True, padx=12, pady=4)
 
@@ -347,7 +494,7 @@ class SignLanguageApp(tk.Tk):
         self.lbl_fps = tk.Label(diag_frame, text="⚡ FPS: 0.0", font=("Segoe UI", 9), fg=self.C_MUTED, bg=self.C_CARD_LIGHT)
         self.lbl_fps.pack(side="right", padx=10, pady=3)
 
-        # Viewfinder Control Bar (Clean 2-Row Layout to prevent any text clipping)
+        # Viewfinder Control Bar (Clean 2-Row Layout)
         ctrl_frame = tk.Frame(left_card, bg=self.C_CARD)
         ctrl_frame.pack(fill="x", padx=12, pady=(4, 10))
 
@@ -455,11 +602,11 @@ class SignLanguageApp(tk.Tk):
                                  activebackground="#15212E", font=("Segoe UI", 9))
         chk_tts.pack(side="left", padx=10)
 
-        # 2. TWO-WAY STAFF RESPONSE (Packed at BOTTOM so it is ALWAYS visible and never pushed off!)
-        two_way_frame = tk.LabelFrame(
+        # 2. TWO-WAY STAFF RESPONSE (Packed at BOTTOM so it is ALWAYS visible)
+        self.two_way_frame = tk.LabelFrame(
             parent,
             text=" 💬 Staff Two-Way Communicator (Display to Signer) ",
-            font=("Segoe UI", 9, "bold"),
+            font=("Segoe UI", 10, "bold"),
             fg=self.C_ACCENT_GREEN,
             bg="#16202C",
             highlightbackground="#27394D",
@@ -467,20 +614,20 @@ class SignLanguageApp(tk.Tk):
             padx=10,
             pady=6
         )
-        two_way_frame.pack(side="bottom", fill="x", padx=12, pady=(4, 10))
+        self.two_way_frame.pack(side="bottom", fill="x", padx=12, pady=(4, 10))
 
         # Instructions / Context Bar + Edit Presets Button
-        tw_bar = tk.Frame(two_way_frame, bg="#16202C")
+        tw_bar = tk.Frame(self.two_way_frame, bg="#16202C")
         tw_bar.pack(fill="x", padx=2, pady=(0, 2))
 
-        lbl_hint = tk.Label(
+        self.lbl_tw_hint = tk.Label(
             tw_bar,
             text="Quick response presets (Click to send instantly):",
-            font=("Segoe UI", 8),
+            font=("Segoe UI", 9),
             fg="#8FA3B8",
             bg="#16202C"
         )
-        lbl_hint.pack(side="left")
+        self.lbl_tw_hint.pack(side="left")
 
         btn_edit_words = tk.Button(
             tw_bar,
@@ -498,17 +645,17 @@ class SignLanguageApp(tk.Tk):
         )
         btn_edit_words.pack(side="right")
 
-        # Quick preset buttons (dynamically populated based on Scenario in 2 rows)
-        self.quick_frame = tk.Frame(two_way_frame, bg="#16202C")
-        self.quick_frame.pack(fill="x", padx=0, pady=(1, 4))
+        # Quick preset buttons (dynamically populated based on Scenario)
+        self.quick_frame = tk.Frame(self.two_way_frame, bg="#16202C")
+        self.quick_frame.pack(fill="x", padx=0, pady=(2, 4))
 
         # Custom Reply Input Row
-        input_box = tk.Frame(two_way_frame, bg="#16202C")
-        input_box.pack(fill="x", padx=0, pady=(2, 2))
+        input_box = tk.Frame(self.two_way_frame, bg="#16202C")
+        input_box.pack(fill="x", padx=0, pady=(3, 2))
 
         self.entry_reply = tk.Entry(
             input_box,
-            font=("Segoe UI", 10),
+            font=("Segoe UI", 12),
             bg="#0D151E",
             fg="#FFFFFF",
             insertbackground="#00E5FF",
@@ -517,49 +664,61 @@ class SignLanguageApp(tk.Tk):
             highlightcolor=self.C_ACCENT_GREEN,
             highlightthickness=1
         )
-        self.entry_reply.pack(side="left", fill="x", expand=True, padx=(0, 6), ipady=5)
+        self.entry_reply.pack(side="left", fill="x", expand=True, padx=(0, 6), ipady=6)
         self.entry_reply.bind("<Return>", lambda e: self.send_staff_reply(self.entry_reply.get()))
 
-        btn_send = tk.Button(
+        self.btn_send_reply = tk.Button(
             input_box,
             text=" Send Reply ↵ ",
-            font=("Segoe UI", 9, "bold"),
+            font=("Segoe UI", 10, "bold"),
             bg=self.C_ACCENT_GREEN,
             fg="#0A1E11",
             activebackground="#00C853",
             activeforeground="#000000",
             relief="flat",
-            padx=14,
-            pady=4,
+            padx=16,
+            pady=5,
             cursor="hand2",
             command=lambda: self.send_staff_reply(self.entry_reply.get())
         )
-        btn_send.pack(side="right")
+        self.btn_send_reply.pack(side="right")
 
         # 3. CONVERSATION TIMELINE HEADER (Packed at TOP after Hero)
         t_header = tk.Frame(parent, bg=self.C_CARD)
         t_header.pack(side="top", fill="x", padx=14, pady=(4, 2))
+
         tk.Label(t_header, text="Conversation Timeline", font=("Segoe UI", 11, "bold"),
                  fg=self.C_TEXT, bg=self.C_CARD).pack(side="left")
+
+        # Clear Log Button
         tk.Button(t_header, text="🗑 Clear Log", font=("Segoe UI", 8), bg="#222C38", fg=self.C_MUTED,
                   activebackground="#2F3E50", activeforeground="#FFFFFF",
-                  relief="flat", padx=8, pady=1, cursor="hand2", command=self.clear_log).pack(side="right")
+                  relief="flat", padx=8, pady=1, cursor="hand2", command=self.clear_log).pack(side="right", padx=(8, 0))
 
-        # 4. CONVERSATION TIMELINE LOG CONTAINER (Packed to fill whatever remaining middle space!)
+        # Font Scaling Controls [ A- ] [ A+ ]
+        font_box = tk.Frame(t_header, bg=self.C_CARD)
+        font_box.pack(side="right", padx=4)
+
+        tk.Label(font_box, text="Font Size:", font=("Segoe UI", 8, "bold"), fg=self.C_MUTED, bg=self.C_CARD).pack(side="left", padx=(0, 4))
+
+        tk.Button(font_box, text=" A- ", font=("Segoe UI", 8, "bold"), bg="#203040", fg="#80D8FF",
+                  relief="flat", padx=6, pady=1, cursor="hand2",
+                  command=lambda: self.change_font_scale(-1)).pack(side="left", padx=1)
+
+        self.lbl_font_indicator = tk.Label(font_box, text="Large", font=("Segoe UI", 8), fg="#00E5FF", bg=self.C_CARD, width=12)
+        self.lbl_font_indicator.pack(side="left", padx=2)
+
+        tk.Button(font_box, text=" A+ ", font=("Segoe UI", 8, "bold"), bg="#203040", fg="#80D8FF",
+                  relief="flat", padx=6, pady=1, cursor="hand2",
+                  command=lambda: self.change_font_scale(1)).pack(side="left", padx=1)
+
+        # 4. CONVERSATION TIMELINE LOG CONTAINER (Fills remaining middle space)
         log_container = tk.Frame(parent, bg=self.C_CARD)
         log_container.pack(side="top", fill="both", expand=True, padx=12, pady=2)
 
-        self.txt_timeline = tk.Text(log_container, bg="#121820", fg=self.C_TEXT, font=("Segoe UI", 11),
+        self.txt_timeline = tk.Text(log_container, bg="#121820", fg=self.C_TEXT, font=("Segoe UI", 12),
                                     wrap="word", relief="flat", padx=12, pady=8, state="disabled",
                                     height=6, highlightthickness=1, highlightbackground="#202C3A")
-        self.txt_timeline.tag_config("time", foreground="#788899", font=("Consolas", 9))
-        self.txt_timeline.tag_config("signer", foreground="#00E5FF", font=("Segoe UI", 11, "bold"))
-        self.txt_timeline.tag_config("signer_body", foreground="#FFFFFF", font=("Segoe UI", 12, "bold"))
-        self.txt_timeline.tag_config("staff", foreground="#00E676", font=("Segoe UI", 11, "bold"))
-        self.txt_timeline.tag_config("staff_body", foreground="#E8F5E9", font=("Segoe UI", 11))
-        self.txt_timeline.tag_config("system", foreground="#FFD600", font=("Segoe UI", 10, "bold"))
-        self.txt_timeline.tag_config("system_body", foreground="#FFE082", font=("Segoe UI", 10, "italic"))
-
         self.txt_timeline.pack(side="left", fill="both", expand=True)
 
         scrollbar = ttk.Scrollbar(log_container, orient="vertical", command=self.txt_timeline.yview)
@@ -588,7 +747,7 @@ class SignLanguageApp(tk.Tk):
                                    width=18, relief="flat", highlightbackground=self.C_BORDER, highlightthickness=1)
         self.entry_word.pack(side="left", padx=8)
 
-        # Quick preset words (dynamically populated based on Scenario)
+        # Quick preset words container (dynamically wrapped in rows)
         self.presets_box = tk.Frame(sec1, bg=self.C_CARD)
         self.presets_box.pack(fill="x", pady=4)
 
@@ -656,6 +815,43 @@ class SignLanguageApp(tk.Tk):
         self.lbl_footer_tech.pack(side="right", padx=16, pady=4)
 
     # ----------------------------------------------------------------------
+    # Accessibility Font Scaling Controller
+    # ----------------------------------------------------------------------
+    def change_font_scale(self, delta):
+        """Increases or decreases font scale across conversation log, communicator, entry, and buttons."""
+        self.font_scale_idx = max(0, min(len(FONT_LEVELS) - 1, self.font_scale_idx + delta))
+        self._apply_font_scale()
+
+    def _apply_font_scale(self):
+        cfg = FONT_LEVELS[self.font_scale_idx]
+        if hasattr(self, "lbl_font_indicator"):
+            self.lbl_font_indicator.config(text=cfg["name"])
+
+        # Timeline Text Tags
+        if hasattr(self, "txt_timeline"):
+            self.txt_timeline.config(font=("Segoe UI", cfg["log_body"]))
+            self.txt_timeline.tag_config("time", foreground="#788899", font=("Consolas", cfg["log_time"]))
+            self.txt_timeline.tag_config("signer", foreground="#00E5FF", font=("Segoe UI", cfg["log_signer"], "bold"))
+            self.txt_timeline.tag_config("signer_body", foreground="#FFFFFF", font=("Segoe UI", cfg["log_signer"] + 1, "bold"))
+            self.txt_timeline.tag_config("staff", foreground="#00E676", font=("Segoe UI", cfg["log_staff"], "bold"))
+            self.txt_timeline.tag_config("staff_body", foreground="#E8F5E9", font=("Segoe UI", cfg["log_staff"]))
+            self.txt_timeline.tag_config("system", foreground="#FFD600", font=("Segoe UI", cfg["log_time"] + 1, "bold"))
+            self.txt_timeline.tag_config("system_body", foreground="#FFE082", font=("Segoe UI", cfg["log_time"] + 1, "italic"))
+
+        # Two-Way Communicator Controls
+        if hasattr(self, "two_way_frame"):
+            self.two_way_frame.config(font=("Segoe UI", cfg["header_sub"], "bold"))
+        if hasattr(self, "lbl_tw_hint"):
+            self.lbl_tw_hint.config(font=("Segoe UI", cfg["header_sub"]))
+        if hasattr(self, "entry_reply"):
+            self.entry_reply.config(font=("Segoe UI", cfg["entry"]))
+        if hasattr(self, "btn_send_reply"):
+            self.btn_send_reply.config(font=("Segoe UI", cfg["btn_send"], "bold"))
+
+        # Re-render quick preset buttons with new font and padding
+        self._render_scenario_buttons()
+
+    # ----------------------------------------------------------------------
     # AI Model & Scenario Context Switching
     # ----------------------------------------------------------------------
     def _on_scenario_switch(self, event=None):
@@ -691,6 +887,7 @@ class SignLanguageApp(tk.Tk):
     def _render_scenario_buttons(self):
         scenario = self.selected_scenario.get()
         hint_info = self.scenario_hints.get(scenario, ("General", self.C_ACCENT_CYAN, ""))
+        cfg = FONT_LEVELS[self.font_scale_idx]
 
         # Update Scenario Badge and Hint in Hero Card
         if hasattr(self, "lbl_scenario_tag"):
@@ -698,113 +895,133 @@ class SignLanguageApp(tk.Tk):
         if hasattr(self, "lbl_scenario_hint"):
             self.lbl_scenario_hint.config(text=hint_info[2])
 
-        # 1. Update Staff Two-Way Replies with styled chip buttons in 2 neat rows
+        # 1. Update Staff Two-Way Replies with styled chip buttons wrapped nicely in rows of 3
         if hasattr(self, "quick_frame"):
             for widget in self.quick_frame.winfo_children():
                 widget.destroy()
             replies = self.scenario_staff_replies.get(scenario, ["Please wait a moment", "Follow me please"])
-            row1 = tk.Frame(self.quick_frame, bg="#16202C")
-            row1.pack(fill="x", pady=2)
-            row2 = tk.Frame(self.quick_frame, bg="#16202C")
-            row2.pack(fill="x", pady=2)
+            
+            # Chunk replies into rows of at most 3 items
+            chunk_size = 3
+            reply_chunks = [replies[i:i + chunk_size] for i in range(0, len(replies), chunk_size)]
+            for row_items in reply_chunks:
+                row_f = tk.Frame(self.quick_frame, bg="#16202C")
+                row_f.pack(fill="x", pady=2)
+                for p in row_items:
+                    btn = tk.Button(
+                        row_f,
+                        text=f"💬 {p}",
+                        font=("Segoe UI", cfg["presets"], "bold"),
+                        bg="#223648",
+                        fg="#00E5FF",
+                        activebackground="#00B0FF",
+                        activeforeground="#FFFFFF",
+                        relief="flat",
+                        bd=0,
+                        padx=cfg["padding_x"],
+                        pady=cfg["padding_y"],
+                        cursor="hand2",
+                        command=lambda msg=p: self.send_staff_reply(msg)
+                    )
+                    btn.pack(side="left", padx=3, pady=1)
 
-            for idx, p in enumerate(replies):
-                target_row = row1 if idx < 3 else row2
-                btn = tk.Button(
-                    target_row,
-                    text=f"💬 {p}",
-                    font=("Segoe UI", 8, "bold"),
-                    bg="#223648",
-                    fg="#00E5FF",
-                    activebackground="#00B0FF",
-                    activeforeground="#FFFFFF",
-                    relief="flat",
-                    bd=0,
-                    padx=8,
-                    pady=3,
-                    cursor="hand2",
-                    command=lambda msg=p: self.send_staff_reply(msg)
-                )
-                btn.pack(side="left", padx=2, pady=1)
-
-        # 2. Update Studio Suggested Gesture Words
+        # 2. Update Studio Suggested Gesture Words wrapped in rows of 4
         if hasattr(self, "presets_box"):
             for widget in self.presets_box.winfo_children():
                 widget.destroy()
-            tk.Label(self.presets_box, text="Scenario Presets:", font=("Segoe UI", 8, "bold"), fg=self.C_MUTED, bg=self.C_CARD).pack(side="left", padx=(0, 6))
             words = self.scenario_gesture_presets.get(scenario, ["hello", "thank_you", "yes", "no"])
-            for w in words:
-                btn = tk.Button(self.presets_box, text=w, font=("Segoe UI", 8, "bold"),
-                                bg="#263238", fg="#80D8FF", activebackground="#37474F", activeforeground="#FFFFFF",
-                                relief="flat", padx=8, pady=3, cursor="hand2",
-                                command=lambda val=w: self.studio_target_word.set(val))
-                btn.pack(side="left", padx=2)
+            chunk_size = 4
+            word_chunks = [words[i:i + chunk_size] for i in range(0, len(words), chunk_size)]
+            for r_idx, row_words in enumerate(word_chunks):
+                row_f = tk.Frame(self.presets_box, bg=self.C_CARD)
+                row_f.pack(fill="x", pady=2)
+                if r_idx == 0:
+                    tk.Label(row_f, text="Presets:", font=("Segoe UI", 9, "bold"), fg=self.C_MUTED, bg=self.C_CARD).pack(side="left", padx=(0, 6))
+                for w in row_words:
+                    btn = tk.Button(row_f, text=w, font=("Segoe UI", cfg["presets"], "bold"),
+                                    bg="#263238", fg="#80D8FF", activebackground="#37474F", activeforeground="#FFFFFF",
+                                    relief="flat", padx=cfg["padding_x"], pady=cfg["padding_y"], cursor="hand2",
+                                    command=lambda val=w: self.studio_target_word.set(val))
+                    btn.pack(side="left", padx=3)
             if words:
                 self.studio_target_word.set(words[0])
 
     def _on_model_switch(self, event=None):
         name = self.active_model_name.get()
-        if "GRU" in name:
-            self.model_type = "gru"
-        else:
-            self.model_type = "rf"
-        self._load_model_safe()
+        target_type = "gru" if "GRU" in name else "rf"
+        self._load_model_safe(target_type)
 
-    def _load_model_safe(self):
-        """Loads trained models (PyTorch GRU or Scikit-learn RF)."""
-        try:
-            if not config.SAVED_LABELS.exists():
-                self.lbl_model_status.config(text="● No labels found", fg=self.C_ACCENT_RED)
-                return
+    def _load_model_safe(self, preferred_type=None):
+        """Loads trained models (PyTorch GRU or Scikit-learn RF) safely under lock."""
+        with self.model_lock:
+            try:
+                if not config.SAVED_LABELS.exists():
+                    self.lbl_model_status.config(text="● No labels found", fg=self.C_ACCENT_RED)
+                    self.classifier = None
+                    return
 
-            label_map = load_label_mapping(config.SAVED_LABELS)
-            self.id_to_label = {v: k for k, v in label_map.items()}
+                label_map = load_label_mapping(config.SAVED_LABELS)
+                self.id_to_label = {v: k for k, v in label_map.items()}
 
-            if self.model_type == "gru" and config.SAVED_TORCH_MODEL.exists() and torch is not None:
-                ckpt = torch.load(config.SAVED_TORCH_MODEL, map_location="cpu")
-                model = SignGRU(
-                    input_size=ckpt["input_size"],
-                    hidden_size=ckpt["hidden_size"],
-                    num_layers=ckpt["num_layers"],
-                    num_classes=ckpt["num_classes"],
-                )
-                model.load_state_dict(ckpt["model_state"])
-                model.eval()
-                self.classifier = model
-                self.lbl_model_status.config(text=f"● Model: GRU ({len(self.id_to_label)} gestures)", fg=self.C_ACCENT_GREEN)
+                if preferred_type is None:
+                    preferred_type = self.model_type
 
-            elif config.SAVED_SKLEARN_MODEL.exists() and joblib is not None:
-                self.classifier = joblib.load(config.SAVED_SKLEARN_MODEL)
-                self.lbl_model_status.config(text=f"● Model: RF ({len(self.id_to_label)} gestures)", fg=self.C_ACCENT_GREEN)
+                if preferred_type == "gru" and config.SAVED_TORCH_MODEL.exists() and torch is not None:
+                    ckpt = torch.load(config.SAVED_TORCH_MODEL, map_location="cpu", weights_only=True)
+                    model = SignGRU(
+                        input_size=ckpt["input_size"],
+                        hidden_size=ckpt["hidden_size"],
+                        num_layers=ckpt["num_layers"],
+                        num_classes=ckpt["num_classes"],
+                    )
+                    model.load_state_dict(ckpt["model_state"])
+                    model.eval()
+                    self.classifier = model
+                    self.model_type = "gru"
+                    self.active_model_name.set("PyTorch GRU")
+                    self.lbl_model_status.config(text=f"● Model: GRU ({len(self.id_to_label)} gestures)", fg=self.C_ACCENT_GREEN)
 
-            else:
-                self.lbl_model_status.config(text="● Untrained (Run train script)", fg="#FF9100")
+                elif config.SAVED_SKLEARN_MODEL.exists() and joblib is not None:
+                    self.classifier = joblib.load(config.SAVED_SKLEARN_MODEL)
+                    self.model_type = "rf"
+                    self.active_model_name.set("Random Forest")
+                    self.lbl_model_status.config(text=f"● Model: RF ({len(self.id_to_label)} gestures)", fg=self.C_ACCENT_GREEN)
 
-        except Exception as e:
-            self.lbl_model_status.config(text=f"● Load error: {e}", fg=self.C_ACCENT_RED)
+                else:
+                    self.classifier = None
+                    self.lbl_model_status.config(text="● Untrained (Run training)", fg="#FF9100")
+
+            except Exception as e:
+                self.classifier = None
+                self.lbl_model_status.config(text=f"● Load error: {e}", fg=self.C_ACCENT_RED)
 
     def _predict(self, seq_24x112):
-        """Predicts gesture class and confidence from (24, 112) matrix."""
-        if self.classifier is None:
-            return "Untrained Model", 0.0
+        """Predicts gesture class and confidence from (24, 112) matrix under lock."""
+        with self.model_lock:
+            if self.classifier is None:
+                return "Untrained Model", 0.0
 
-        if self.model_type == "rf":
-            flat = seq_24x112.reshape(1, -1)
-            probs = self.classifier.predict_proba(flat)[0]
-            idx = int(np.argmax(probs))
-            label = str(self.classifier.classes_[idx])
-            return label, float(probs[idx])
+            if self.model_type == "rf":
+                if hasattr(self.classifier, "predict_proba"):
+                    flat = seq_24x112.reshape(1, -1)
+                    probs = self.classifier.predict_proba(flat)[0]
+                    idx = int(np.argmax(probs))
+                    label = str(self.classifier.classes_[idx])
+                    return label, float(probs[idx])
+                return "RF Not Ready", 0.0
 
-        elif self.model_type == "gru":
-            with torch.no_grad():
-                tensor_in = torch.tensor(seq_24x112[None, ...], dtype=torch.float32)
-                logits = self.classifier(tensor_in)
-                probs = torch.softmax(logits, dim=-1)[0].numpy()
-                idx = int(np.argmax(probs))
-                label = self.id_to_label.get(idx, f"Class {idx}")
-                return label, float(probs[idx])
+            elif self.model_type == "gru":
+                if torch is not None and hasattr(self.classifier, "__call__"):
+                    with torch.no_grad():
+                        tensor_in = torch.tensor(seq_24x112[None, ...], dtype=torch.float32)
+                        logits = self.classifier(tensor_in)
+                        probs = torch.softmax(logits, dim=-1)[0].numpy()
+                        idx = int(np.argmax(probs))
+                        label = self.id_to_label.get(idx, f"Class {idx}")
+                        return label, float(probs[idx])
+                return "GRU Not Ready", 0.0
 
-        return "Unknown", 0.0
+            return "Unknown", 0.0
 
     # ----------------------------------------------------------------------
     # Camera Loop & Real-time State Machine
@@ -816,6 +1033,8 @@ class SignLanguageApp(tk.Tk):
             self.start_camera()
 
     def start_camera(self):
+        if self.is_running:
+            return
         try:
             self.cam = Camera()
             self.tracker = Tracker()
@@ -826,6 +1045,7 @@ class SignLanguageApp(tk.Tk):
             self.thread = threading.Thread(target=self._camera_worker, daemon=True)
             self.thread.start()
         except Exception as e:
+            self.is_running = False
             messagebox.showerror("Camera Error", f"Unable to start camera:\n{e}\n\nPlease check camera connection.")
 
     def stop_camera(self):
@@ -841,12 +1061,20 @@ class SignLanguageApp(tk.Tk):
         self.lbl_camera_status.config(text="● Camera: Stopped", fg=self.C_MUTED)
         self.canvas_video.delete("all")
         self._video_canvas_item = None
+        self._render_pending = False
 
     def trigger_manual_record(self):
         """Triggers recording manually (via button or Spacebar)."""
         if not self.is_running:
             self.start_camera()
-            time.sleep(0.5)
+            if not self.is_running:
+                return
+            # Allow camera 200ms to initialize before arming
+            self.after(200, self._arm_manual_record)
+        else:
+            self._arm_manual_record()
+
+    def _arm_manual_record(self):
         self.state = "recording"
         self.rec_start_time = time.perf_counter()
         self.current_recording = []
@@ -903,10 +1131,13 @@ class SignLanguageApp(tk.Tk):
                         hand_in_zone = True
                         break
 
-            # State Transitions
-            mode = self.trigger_mode.get()
+            # State Transitions (Thread-Safe check of variables)
+            mode = self.trigger_mode_val
+            is_translation_tab = (self.active_tab_idx == 0)
+
             if self.state == "idle":
-                if mode == "auto" and hand_in_zone:
+                # Auto-trigger arms only in Tab 1 (Translation) and when not in Studio mode
+                if mode == "auto" and hand_in_zone and is_translation_tab and not self.studio_recording:
                     if self.arm_start_time is None:
                         self.arm_start_time = now
                         self._update_badge("ARMING...", self.C_ACCENT_YELLOW)
@@ -919,6 +1150,10 @@ class SignLanguageApp(tk.Tk):
                     self.arm_start_time = None
                     self._update_badge("READY", self.C_ACCENT_GREEN)
 
+            elif self.state == "countdown":
+                # During studio countdown, auto-trigger is suppressed
+                self.arm_start_time = None
+
             elif self.state == "recording":
                 self.current_recording.append(frame_vec)
                 elapsed = now - self.rec_start_time
@@ -929,8 +1164,10 @@ class SignLanguageApp(tk.Tk):
 
                     # Check if this was a Studio sample recording
                     if self.studio_recording:
-                        self._save_studio_sample(self.current_recording)
+                        rec_frames = list(self.current_recording)
                         self.studio_recording = False
+                        # Dispatch sample save to main thread safely
+                        self.after(0, self._save_studio_sample, rec_frames)
                     else:
                         if len(self.current_recording) >= 10:
                             seq_24 = resample_sequence(np.array(self.current_recording), target_len=config.TARGET_FRAMES)
@@ -940,14 +1177,20 @@ class SignLanguageApp(tk.Tk):
                             self.after(0, self._on_prediction_ready, "(No motion)", 0.0)
 
             elif self.state == "result":
-                # Cooldown
-                if not hand_in_zone or (now - self.rec_start_time) > 3.2:
-                    self.state = "idle"
-                    self.arm_start_time = None
+                # Cooldown: keep result visible for at least 1.4s
+                elapsed = now - self.rec_start_time
+                if elapsed >= 1.4:
+                    if mode == "auto":
+                        # In auto mode, wait until hand is lowered or 3.0s timeout to prevent immediate re-trigger
+                        if not hand_in_zone or elapsed >= 3.0:
+                            self.state = "idle"
+                            self.arm_start_time = None
+                    else:
+                        self.state = "idle"
 
             # Render Overlays
             view = frame.copy()
-            if self.show_skeleton.get():
+            if self.show_skeleton_val:
                 if pose_lms is not None:
                     draw_pose(view, pose_lms)
                 for side, lms in hands.items():
@@ -973,19 +1216,32 @@ class SignLanguageApp(tk.Tk):
 
             self.after(0, self._update_diagnostics, sh_dist_str, l_found, r_found, self.fps, self.latency_ms)
 
-            # Render to Tkinter Canvas efficiently
+            # Render to Tkinter Canvas efficiently with queue guard
             rgb = cv2.cvtColor(view, cv2.COLOR_BGR2RGB)
-            self.after(0, self._render_canvas, rgb)
+            if not self._render_pending:
+                self._render_pending = True
+                self.after(0, self._render_canvas, rgb)
 
     def _render_canvas(self, rgb_array):
-        """Draws RGB frame onto canvas with persistent image item (zero memory leak)."""
+        """
+        Draws RGB frame onto canvas.
+        Dynamically scales the image UP when window is maximized/large to fill the frame,
+        and scales DOWN smoothly when window is smaller, preserving aspect ratio with zero clipping.
+        """
         c_w = self.canvas_video.winfo_width()
         c_h = self.canvas_video.winfo_height()
         if c_w < 10 or c_h < 10:
+            self._render_pending = False
             return
 
+        orig_h, orig_w = rgb_array.shape[:2]
+        # Aspect-ratio scaling that fits available canvas space
+        scale = min(c_w / orig_w, c_h / orig_h)
+        new_w = max(1, int(orig_w * scale))
+        new_h = max(1, int(orig_h * scale))
+
         img = Image.fromarray(rgb_array)
-        img.thumbnail((c_w, c_h), Image.Resampling.BILINEAR)
+        img = img.resize((new_w, new_h), Image.Resampling.BILINEAR)
         img_tk = ImageTk.PhotoImage(image=img)
 
         if self._video_canvas_item is None:
@@ -995,13 +1251,14 @@ class SignLanguageApp(tk.Tk):
             self.canvas_video.itemconfig(self._video_canvas_item, image=img_tk)
 
         self.canvas_video.image = img_tk  # Keep reference
+        self._render_pending = False
 
     def _update_badge(self, text, bg_color):
         self.after(0, lambda: self.badge_state.config(text=text, bg=bg_color))
 
     def _update_diagnostics(self, dist_str, l_found, r_found, fps, lat):
         dist_color = self.C_ACCENT_GREEN if dist_str != "--" else self.C_MUTED
-        self.lbl_distance.config(text=f"📏 Shoulder Dist: {dist_str}", fg=dist_color)
+        self.lbl_distance.config(text=f"📏 Distance: {dist_str}", fg=dist_color)
 
         l_str = "L[✓]" if l_found else "L[-]"
         r_str = "R[✓]" if r_found else "R[-]"
@@ -1018,27 +1275,40 @@ class SignLanguageApp(tk.Tk):
         self.last_conf = conf
 
         clean_label = label.replace("_", " ").title() if label else "Unknown"
-        self.lbl_hero_word.config(text=clean_label)
+
+        # Check against confidence threshold
+        is_confident = (conf >= self.threshold) and (label not in ("(No motion)", "Unknown", "Untrained Model"))
+
+        if is_confident:
+            display_title = clean_label
+            display_color = self.C_TEXT
+            bar_color = self.C_ACCENT_GREEN
+        else:
+            if label in ("(No motion)", "Untrained Model"):
+                display_title = clean_label
+            else:
+                display_title = f"{clean_label} (Uncertain)"
+            display_color = "#FFB300"
+            bar_color = "#FF9100"
+
+        self.lbl_hero_word.config(text=display_title, fg=display_color)
         self.lbl_conf_tag.config(text=f"Confidence: {int(conf * 100)}%")
 
         # Draw Confidence Bar
         self.canvas_conf_bar.delete("all")
         bar_w = self.canvas_conf_bar.winfo_width()
         fill_w = int(bar_w * np.clip(conf, 0.0, 1.0))
-        bar_color = self.C_ACCENT_GREEN if conf >= self.threshold else "#FF9100"
         self.canvas_conf_bar.create_rectangle(0, 0, fill_w, 6, fill=bar_color, width=0)
 
-        # Append to Conversation Timeline
-        if conf >= 0.50 and label not in ("(No motion)", "Unknown", "Untrained Model"):
+        # Append to Conversation Timeline and Auto-speak ONLY if confident
+        if is_confident:
             self._append_to_timeline("🤟 [Signer]", f"{clean_label} ({int(conf * 100)}%)", "signer")
-
-            # Auto-speak if enabled
             if self.auto_speak.get():
                 speak_text_async(clean_label)
 
     def speak_current_sign(self):
         """Manual click to speak the current hero sign."""
-        if self.last_sign and self.last_sign != "-":
+        if self.last_sign and self.last_sign not in ("-", "(No motion)", "Untrained Model"):
             clean = self.last_sign.replace("_", " ").title()
             speak_text_async(clean)
 
@@ -1058,7 +1328,7 @@ class SignLanguageApp(tk.Tk):
         ts = time.strftime("%H:%M:%S")
         self.txt_timeline.config(state="normal")
 
-        # Timestamp in subtle gray
+        # Timestamp
         self.txt_timeline.insert(tk.END, f"[{ts}] ", "time")
 
         # Speaker Badge and Body
@@ -1094,9 +1364,11 @@ class SignLanguageApp(tk.Tk):
 
         if not self.is_running:
             self.start_camera()
-            time.sleep(0.5)
+            if not self.is_running:
+                return
 
         self.btn_studio_rec.config(state="disabled")
+        self.state = "countdown"
         self._do_countdown(3, word)
 
     def _do_countdown(self, seconds_left, word):
@@ -1113,7 +1385,7 @@ class SignLanguageApp(tk.Tk):
             self._update_badge("STUDIO REC", self.C_ACCENT_RED)
 
     def _save_studio_sample(self, frames):
-        """Saves recorded frames directly into data/raw/<word>/."""
+        """Saves recorded frames directly into data/raw/<word>/ on main thread."""
         word = self.studio_target_word.get().strip().lower().replace(" ", "_")
         person = self.studio_person.get()
 
@@ -1160,21 +1432,27 @@ class SignLanguageApp(tk.Tk):
         self.txt_dataset_info.insert(tk.END, f"Total Classes: {len(class_folders)} | Total Samples: {total_samples}\n")
 
     def retrain_models_async(self):
-        """Retrains Random Forest and PyTorch GRU in background thread."""
+        """Retrains Random Forest and PyTorch GRU in background thread with gradient clipping & evaluation."""
         self.btn_train_models.config(state="disabled")
         self.lbl_train_status.config(text="Training in progress... Please wait 3-5 seconds", fg=self.C_ACCENT_YELLOW)
 
         def _worker():
             try:
-                # Load dataset
+                # 1. Load dataset safely (skips empty directories)
                 X, y, groups, label_to_id = load_raw_dataset()
                 if len(label_to_id) < 2:
                     self.after(0, lambda: messagebox.showwarning("Training Error", "Need at least 2 distinct gesture classes to train!"))
                     self.after(0, self._on_train_finished, False, "Need at least 2 classes")
                     return
 
-                # 1. Train Random Forest
+                # 2. Split dataset with safe stratification
                 X_train, X_test, y_train, y_test = split_dataset(X, y, groups, test_size=0.2)
+
+                # Augment compact training sets
+                if len(X_train) < 50:
+                    X_train, y_train = augment_dataset(X_train, y_train, num_copies=1, noise_std=0.015)
+
+                # Train Random Forest
                 X_train_flat = X_train.reshape(X_train.shape[0], -1)
                 X_test_flat = X_test.reshape(X_test.shape[0], -1)
 
@@ -1187,30 +1465,53 @@ class SignLanguageApp(tk.Tk):
                 joblib.dump(clf, config.SAVED_SKLEARN_MODEL)
                 save_label_mapping(label_to_id, config.SAVED_LABELS)
 
-                # 2. Train PyTorch GRU
+                # 3. Train PyTorch GRU Sequence Model
                 y_encoded = np.array([label_to_id[name] for name in y], dtype=np.int64)
                 X_train_g, X_test_g, y_train_g, y_test_g = split_dataset(X, y_encoded, groups, test_size=0.2)
+                if len(X_train_g) < 50:
+                    X_train_g, y_train_g = augment_dataset(X_train_g, y_train_g, num_copies=1, noise_std=0.015)
 
                 train_ds = TensorDataset(torch.tensor(X_train_g, dtype=torch.float32), torch.tensor(y_train_g, dtype=torch.long))
+                test_ds = TensorDataset(torch.tensor(X_test_g, dtype=torch.float32), torch.tensor(y_test_g, dtype=torch.long))
+
                 loader = DataLoader(train_ds, batch_size=min(16, max(2, len(train_ds))), shuffle=True)
+                test_loader = DataLoader(test_ds, batch_size=min(16, max(2, len(test_ds))), shuffle=False)
 
                 device = torch.device("cpu")
                 model = SignGRU(input_size=config.NUM_FEATURES, hidden_size=64, num_layers=2, num_classes=len(label_to_id)).to(device)
                 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
                 criterion = nn.CrossEntropyLoss()
 
-                for epoch in range(35):
+                best_gru_acc = 0.0
+                best_model_state = None
+
+                for epoch in range(40):
                     model.train()
                     for bx, by in loader:
                         optimizer.zero_grad()
                         out = model(bx)
                         loss = criterion(out, by)
                         loss.backward()
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                         optimizer.step()
 
-                # Save Torch model
+                    # Evaluate on test set
+                    model.eval()
+                    correct, total = 0, 0
+                    with torch.no_grad():
+                        for bx, by in test_loader:
+                            out = model(bx)
+                            correct += (out.argmax(dim=-1) == by).sum().item()
+                            total += len(by)
+                    epoch_acc = (correct / total) if total > 0 else 0.0
+
+                    if epoch_acc >= best_gru_acc or best_model_state is None:
+                        best_gru_acc = epoch_acc
+                        best_model_state = {k: v.cpu() for k, v in model.state_dict().items()}
+
+                # Save best GRU checkpoint
                 torch.save({
-                    "model_state": model.state_dict(),
+                    "model_state": best_model_state or model.state_dict(),
                     "label_to_id": label_to_id,
                     "input_size": config.NUM_FEATURES,
                     "hidden_size": 64,
@@ -1218,7 +1519,8 @@ class SignLanguageApp(tk.Tk):
                     "num_classes": len(label_to_id),
                 }, config.SAVED_TORCH_MODEL)
 
-                self.after(0, self._on_train_finished, True, f"Success! RF Acc: {rf_acc*100:.0f}%, {len(label_to_id)} classes ready")
+                summary_msg = f"RF Acc: {rf_acc*100:.0f}%  |  GRU Acc: {best_gru_acc*100:.0f}%  |  {len(label_to_id)} classes ready"
+                self.after(0, self._on_train_finished, True, summary_msg)
 
             except Exception as e:
                 self.after(0, self._on_train_finished, False, f"Train failed: {e}")

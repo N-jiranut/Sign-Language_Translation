@@ -16,7 +16,11 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_DIR = Path(__file__).resolve().parent
+for _p in (str(_DIR), str(_DIR.parent)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import config  # noqa: E402
 
 
@@ -106,6 +110,13 @@ class Tracker:
         self.pose = vision.PoseLandmarker.create_from_options(pose_opts)
         self._last_ts = -1
 
+    def reset(self):
+        """Advances timestamp gap to prevent state bleed across video clips."""
+        if self._last_ts > 0:
+            self._last_ts += 10000
+        else:
+            self._last_ts = -1
+
     def _next_ts(self):
         # VIDEO mode needs strictly increasing timestamps (ms)
         # โหมดวิดีโอต้องใช้ timestamp ที่เพิ่มขึ้นเสมอ
@@ -115,12 +126,19 @@ class Tracker:
         self._last_ts = ts
         return ts
 
-    def process(self, frame_bgr):
+    def process(self, frame_bgr, timestamp_ms=None):
         """frame_bgr must already be flipped if config.FLIP_IMAGE.
+        timestamp_ms: optional int milliseconds for offline video processing.
         Returns (hand_result, pose_result, timings_ms)."""
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        ts = self._next_ts()
+        if timestamp_ms is not None:
+            if timestamp_ms <= self._last_ts:
+                timestamp_ms = self._last_ts + 1
+            self._last_ts = timestamp_ms
+            ts = timestamp_ms
+        else:
+            ts = self._next_ts()
 
         t0 = time.perf_counter()
         hand_res = self.hands.detect_for_video(image, ts)

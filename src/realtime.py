@@ -20,7 +20,11 @@ import joblib
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_DIR = Path(__file__).resolve().parent
+for _p in (str(_DIR), str(_DIR.parent)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import config
 from dataset import load_label_mapping
 from features import extract_frame_features, resample_sequence
@@ -59,7 +63,7 @@ def load_classifier(model_type="auto"):
     elif model_type == "gru":
         if not config.SAVED_TORCH_MODEL.exists():
             raise FileNotFoundError(f"Model file {config.SAVED_TORCH_MODEL} not found.")
-        ckpt = torch.load(config.SAVED_TORCH_MODEL, map_location="cpu")
+        ckpt = torch.load(config.SAVED_TORCH_MODEL, map_location="cpu", weights_only=True)
         model = SignGRU(
             input_size=ckpt["input_size"],
             hidden_size=ckpt["hidden_size"],
@@ -111,7 +115,6 @@ def get_ready_line_y(pose_lms, h):
             r_sh = pose_lms[config.POSE_KEEP["r_shoulder"]]
             cy = (l_sh.y + r_sh.y) / 2.0
             sh_w = np.hypot(l_sh.x - r_sh.x, l_sh.y - r_sh.y)
-            # Ready line positioned ~0.65 shoulder width below shoulder midpoint
             chest_y = cy + 0.65 * max(sh_w, 0.15)
             chest_y = np.clip(chest_y, 0.35, 0.85)
             return int(chest_y * h)
@@ -212,15 +215,12 @@ def draw_ready_guide(img, ready_line_y, hand_inside, state):
     """
     h, w = img.shape[:2]
     if state == "recording":
-        # Draw red border during active recording
         cv2.rectangle(img, (0, 0), (w - 1, h - 1), (0, 0, 255), 4)
         return
 
-    # Ready line color changes depending on whether hand is detected inside
     line_color = (0, 220, 255) if hand_inside else (120, 120, 120)
     line_thickness = 2 if hand_inside else 1
 
-    # Draw dashed-style horizontal line
     segment_w = 20
     for x in range(0, w, segment_w * 2):
         cv2.line(img, (x, ready_line_y), (min(x + segment_w, w), ready_line_y), line_color, line_thickness)
@@ -255,13 +255,11 @@ def main():
     print(f"[Config] Mode: {args.mode.upper()} | Sign Duration: {args.duration}s | Threshold: {args.threshold}")
     print("[Instructions] Raise hand above chest line to trigger, or press SPACE to record. Press 'm' to toggle mode, 'q' to quit.")
 
-    # State Machine Variables
-    # States: 'idle', 'armed', 'recording', 'result'
     state = "idle"
     mode = args.mode
 
     hand_in_zone_start = None
-    ARM_HOLD_DURATION = 0.35   # Hand must stay above ready line for 0.35s to start
+    ARM_HOLD_DURATION = 0.35
 
     rec_start_time = 0.0
     recorded_frames = []
@@ -288,48 +286,46 @@ def main():
             hands = hands_by_side(hand_res)
             pose_lms = pose_res.pose_landmarks[0] if pose_res.pose_landmarks else None
 
-            # Extract 112 features for current frame
             frame_vec = extract_frame_features(pose_lms, hands)
 
-            # Ready zone calculation
             ready_line_y = get_ready_line_y(pose_lms, h)
             hand_inside = is_hand_in_ready_zone(hands, ready_line_y, h)
 
-            # Measure FPS
             now = time.perf_counter()
             dt = now - prev_t
             prev_t = now
             fps = 0.9 * fps + 0.1 * (1.0 / dt if dt > 0 else 0)
 
-            # ------------------------------------------------------------------
-            # State Machine Transitions
-            # ------------------------------------------------------------------
             progress = 0.0
+            draw_state = state
 
             if state == "idle":
                 state_desc = "IDLE: Raise hand above chest line to begin" if mode == "auto" else "MANUAL: Press [SPACE] to record"
                 if mode == "auto" and hand_inside:
                     if hand_in_zone_start is None:
                         hand_in_zone_start = now
+                        draw_state = "armed"
+                        state_desc = "ARMING: Hold steady at ready position..."
                     elif (now - hand_in_zone_start) >= ARM_HOLD_DURATION:
-                        # Hand was held in zone long enough -> start recording!
                         state = "recording"
                         rec_start_time = now
                         recorded_frames = [frame_vec]
                         hand_in_zone_start = None
+                        draw_state = "recording"
                     else:
+                        draw_state = "armed"
                         state_desc = "ARMING: Hold steady at ready position..."
                 else:
                     hand_in_zone_start = None
 
             elif state == "recording":
+                draw_state = "recording"
                 recorded_frames.append(frame_vec)
                 elapsed = now - rec_start_time
                 progress = min(1.0, elapsed / args.duration)
                 state_desc = f"RECORDING: Signing in progress ({elapsed:3.1f}s / {args.duration:3.1f}s)"
 
                 if elapsed >= args.duration:
-                    # Recording completed -> process and predict
                     if len(recorded_frames) >= 10:
                         seq_24 = resample_sequence(np.array(recorded_frames), target_len=config.TARGET_FRAMES)
                         label, conf = predict(model_type, model, seq_24, id_to_label)
@@ -343,13 +339,12 @@ def main():
                     result_start_time = now
 
             elif state == "result":
+                draw_state = "result"
                 elapsed = now - result_start_time
                 state_desc = "RESULT: Translated gesture output"
                 progress = 1.0
 
-                # Hold result on screen for cooldown duration
                 if elapsed >= args.cooldown:
-                    # In auto mode, wait for user to lower hand or until extra timeout to avoid immediate re-trigger
                     if mode == "auto":
                         if not hand_inside or elapsed >= (args.cooldown + 1.5):
                             state = "idle"
@@ -357,9 +352,7 @@ def main():
                     else:
                         state = "idle"
 
-            # ------------------------------------------------------------------
             # Visual Rendering
-            # ------------------------------------------------------------------
             view = frame.copy()
             if pose_lms is not None:
                 draw_pose(view, pose_lms)
@@ -367,38 +360,29 @@ def main():
                 if lms is not None:
                     draw_hand(view, lms, side)
 
-            # Draw Ready Guide Line
             draw_ready_guide(view, ready_line_y, hand_inside, state)
-
-            # Draw HUD overlay
-            draw_recognition_hud(view, state, state_desc, last_label, last_conf,
+            draw_recognition_hud(view, draw_state, state_desc, last_label, last_conf,
                                  args.threshold, model_type, mode, fps, progress)
 
             cv2.imshow("Sign Language Real-time Recognition", view)
 
-            # ------------------------------------------------------------------
-            # Keyboard Controls
-            # ------------------------------------------------------------------
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
 
             elif key == ord(" "):
-                # SPACEBAR manually triggers recording anytime
                 state = "recording"
                 rec_start_time = now
                 recorded_frames = [frame_vec]
                 hand_in_zone_start = None
 
             elif key in (ord("m"), ord("M")):
-                # Toggle trigger mode
                 mode = "manual" if mode == "auto" else "auto"
                 hand_in_zone_start = None
                 print(f"[Mode] Switched to {mode.upper()} mode")
 
     cam.release()
     cv2.destroyAllWindows()
-    print("[Exited] Recognition closed.")
 
 
 if __name__ == "__main__":

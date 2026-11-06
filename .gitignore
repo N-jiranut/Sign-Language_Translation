@@ -4,3 +4,5 @@ __pycache__/
 */__pycache__/
 models/mediapipe/
 results/camera_check/
+videos/*
+!videos/README.txt

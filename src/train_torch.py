@@ -9,9 +9,13 @@ import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_DIR = Path(__file__).resolve().parent
+for _p in (str(_DIR), str(_DIR.parent)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import config
-from dataset import load_raw_dataset, split_dataset, save_label_mapping
+from dataset import load_raw_dataset, split_dataset, save_label_mapping, augment_dataset
 from models import SignGRU
 
 
@@ -36,6 +40,11 @@ def main():
     y_encoded = np.array([label_to_id[name] for name in y], dtype=np.int64)
 
     X_train, X_test, y_train, y_test = split_dataset(X, y_encoded, groups, test_size=0.2)
+
+    # Apply data augmentation if dataset is compact
+    if len(X_train) < 50:
+        X_train, y_train = augment_dataset(X_train, y_train, num_copies=1, noise_std=0.015)
+        print(f"[Augmentation] Augmented training set size: {len(X_train)} samples")
 
     # Convert to PyTorch Tensors
     train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.long))
@@ -118,8 +127,7 @@ def main():
 
     print("\n" + "=" * 50)
     print(f"Training Finished! Best Test Accuracy: {best_acc * 100:.2f}%")
-    print(f"[Saved] Model saved to {config.SAVED_TORCH_MODEL}")
-    save_label_mapping(label_to_id, config.SAVED_LABELS)
+    print(f"Model saved to: {config.SAVED_TORCH_MODEL}")
 
 
 if __name__ == "__main__":

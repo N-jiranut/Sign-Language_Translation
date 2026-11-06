@@ -12,7 +12,7 @@ https://drive.google.com/drive/folders/1LzAXLMlbvhe_Q8gUvHMDZBQxotnzCV6_
 24: yes
 25: you
 41: police_station 
-42: hospitol 
+42: hospital
 43: university
 44: restaurant
 50: today

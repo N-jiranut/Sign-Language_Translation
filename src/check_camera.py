@@ -22,83 +22,83 @@ from collections import deque
 from pathlib import Path
 
 import cv2
+import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_DIR = Path(__file__).resolve().parent
+for _p in (str(_DIR), str(_DIR.parent)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import config  # noqa: E402
 from landmarkers import Camera, Tracker, hands_by_side, draw_hand, draw_pose  # noqa: E402
 
 IDX = config.POSE_KEEP
-BODY_CHECK = ["l_shoulder", "r_shoulder", "l_elbow", "r_elbow"]
 
 
-def body_in_frame(pose_lms, margin=0.02, min_vis=0.5):
-    """True if shoulders and elbows are visible and inside the image.
-    ไหล่และข้อศอกทั้งสองข้างอยู่ในภาพหรือไม่"""
-    for name in BODY_CHECK:
-        lm = pose_lms[IDX[name]]
-        if lm.visibility is not None and lm.visibility < min_vis:
-            return False
+def distance_hint(shoulder_w):
+    """Classify rough distance from shoulder width in normalized coordinates (0..1).
+    กะระยะห่างจากความกว้างไหล่ (0..1)"""
+    if shoulder_w is None:
+        return "no body", (160, 160, 160)
+    lo, hi = config.SHOULDER_WIDTH_GOOD
+    if shoulder_w < lo:
+        return f"too far (< {lo:.2f})", (60, 60, 255)       # red
+    if shoulder_w > hi:
+        return f"too close (> {hi:.2f})", (60, 60, 255)     # red
+    return "distance OK", (80, 220, 80)                     # green
+
+
+def body_inside(pose_lms, margin=0.03):
+    """True if shoulders and elbows are not clipped by the frame edges.
+    ไหล่และข้อศอกสองข้างไม่ตกขอบภาพ (เหลือขอบอย่างน้อย margin)"""
+    if pose_lms is None:
+        return False
+    keys = ("l_shoulder", "r_shoulder", "l_elbow", "r_elbow")
+    for k in keys:
+        lm = pose_lms[IDX[k]]
         if not (margin <= lm.x <= 1 - margin and margin <= lm.y <= 1 - margin):
             return False
     return True
 
 
-def pct(values):
-    return 100.0 * sum(values) / len(values) if values else 0.0
+def pct(iterable):
+    items = list(iterable)
+    return 100.0 * sum(items) / len(items) if items else 0.0
 
 
 def color_for(p):
-    if p >= 80:
-        return (80, 220, 80)    # green
-    if p >= 50:
-        return (0, 200, 255)    # yellow/orange
-    return (60, 60, 255)        # red
-
-
-def distance_hint(shoulder_w):
-    # Rough guide for a seated user ~70-90 cm from a normal webcam.
-    # ค่าคร่าว ๆ ปรับได้ตามกล้องที่ใช้
-    if shoulder_w is None:
-        return "no body", (60, 60, 255)
-    if shoulder_w < 0.25:
-        return "too far - move closer", (0, 200, 255)
-    if shoulder_w > 0.50:
-        return "too close - move back", (0, 200, 255)
-    return "distance OK", (80, 220, 80)
-
-
-def draw_panel(img, lines):
-    """lines: list of (text, color)."""
-    pad, lh = 8, 22
-    w = 330
-    h = pad * 2 + lh * len(lines)
-    overlay = img.copy()
-    cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.55, img, 0.45, 0, img)
-    for i, (text, color) in enumerate(lines):
-        cv2.putText(img, text, (pad, pad + lh * (i + 1) - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1, cv2.LINE_AA)
+    if p >= 90:
+        return (80, 220, 80)
+    if p >= 60:
+        return (60, 220, 220)
+    return (60, 60, 255)
 
 
 def main():
-    cam = Camera()
-    print(f"Camera opened: {cam.actual_size()} (requested "
-          f"{config.CAMERA_WIDTH}x{config.CAMERA_HEIGHT})")
+    print("=" * 60)
+    print(" Camera & Position Check / โหมดทดสอบกล้องและตำแหน่งผู้ใช้ ")
+    print("=" * 60)
+    print("q / Esc = quit | r = reset stats | s = screenshot")
 
-    win = deque(maxlen=config.STATS_WINDOW)     # recent frames
-    total = {"frames": 0, "pose": 0, "left": 0, "right": 0, "both": 0, "body": 0}
-    t_hands = t_pose = 0.0
+    cam = Camera()
+    print(f"Camera opened at {cam.actual_size()}")
+
+    win = deque(maxlen=config.STATS_WINDOW)
+    all_frames = []
+
     fps = 0.0
+    t_hands = 0.0
+    t_pose = 0.0
+    a = 0.1
     last_id = 0
-    prev_t = time.perf_counter()
-    shots = 0
 
     with Tracker() as tracker:
         while True:
+            t0 = time.perf_counter()
             frame, last_id = cam.read(last_id)
             if frame is None:
-                print("No frame from camera / ไม่ได้รับภาพจากกล้อง")
                 continue
+
             if config.FLIP_IMAGE:
                 frame = cv2.flip(frame, 1)
 
@@ -109,23 +109,19 @@ def main():
             has_pose = pose_lms is not None
             has_l = hands["Left"] is not None
             has_r = hands["Right"] is not None
-            in_frame = has_pose and body_in_frame(pose_lms)
-            win.append((has_pose, has_l, has_r, has_l and has_r, in_frame))
-            for k, v in zip(["pose", "left", "right", "both", "body"],
-                            (has_pose, has_l, has_r, has_l and has_r, in_frame)):
-                total[k] += v
-            total["frames"] += 1
+            has_both = has_l and has_r
+            in_frame = body_inside(pose_lms)
 
-            # smoothed timings / ค่าเฉลี่ยแบบนุ่ม
-            now = time.perf_counter()
-            dt = now - prev_t
-            prev_t = now
-            a = 0.1
-            fps = (1 - a) * fps + a * (1.0 / dt if dt > 0 else 0)
+            sample = (has_pose, has_l, has_r, has_both, in_frame)
+            win.append(sample)
+            all_frames.append(sample)
+
+            dt = time.perf_counter() - t0
+            cur_fps = (1.0 / dt) if dt > 0 else 30.0
+            fps = (1 - a) * fps + a * cur_fps
             t_hands = (1 - a) * t_hands + a * ms["hands"]
             t_pose = (1 - a) * t_pose + a * ms["pose"]
 
-            # draw
             view = frame.copy()
             if pose_lms is not None:
                 draw_pose(view, pose_lms)
@@ -135,7 +131,9 @@ def main():
 
             shoulder_w = None
             if pose_lms is not None:
-                shoulder_w = abs(pose_lms[IDX["l_shoulder"]].x - pose_lms[IDX["r_shoulder"]].x)
+                l_sh = pose_lms[IDX["l_shoulder"]]
+                r_sh = pose_lms[IDX["r_shoulder"]]
+                shoulder_w = np.hypot(l_sh.x - r_sh.x, l_sh.y - r_sh.y)
             hint, hint_color = distance_hint(shoulder_w)
 
             cols = list(zip(*win)) if win else [[]] * 5
@@ -153,34 +151,29 @@ def main():
                 (f"Shoulder width  {sw_text}  {hint}", hint_color),
                 (f"last {len(win)} frames | q quit  r reset  s shot", white),
             ]
-            draw_panel(view, lines)
-            cv2.imshow("check_camera", view)
+
+            y = 28
+            for text, color in lines:
+                cv2.putText(view, text, (18, y), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 0, 0), 3)
+                cv2.putText(view, text, (18, y), cv2.FONT_HERSHEY_SIMPLEX, 0.58, color, 1)
+                y += 24
+
+            cv2.imshow("Check Camera (q=quit)", view)
 
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
-            if key == ord("r"):
+            elif key == ord("r"):
                 win.clear()
-                total = dict.fromkeys(total, 0)
-                print("Stats reset / รีเซ็ตสถิติ")
-            if key == ord("s"):
-                out_dir = config.ROOT / "results" / "camera_check"
+            elif key == ord("s"):
+                out_dir = Path("results/camera_check")
                 out_dir.mkdir(parents=True, exist_ok=True)
-                path = out_dir / f"shot_{time.strftime('%Y%m%d_%H%M%S')}_{shots}.png"
-                cv2.imwrite(str(path), view)
-                shots += 1
-                print(f"Saved {path}")
+                fn = out_dir / f"check_{int(time.time())}.jpg"
+                cv2.imwrite(str(fn), view)
+                print(f"[Saved] {fn}")
 
     cam.release()
     cv2.destroyAllWindows()
-
-    n = total["frames"]
-    if n:
-        print("\n=== Summary since last reset / สรุปตั้งแต่รีเซ็ตล่าสุด ===")
-        print(f"frames: {n}")
-        for k in ["pose", "left", "right", "both", "body"]:
-            print(f"{k:>6}: {100 * total[k] / n:5.1f}%")
-        print(f"avg FPS (smoothed): {fps:.1f}, hands {t_hands:.1f} ms, pose {t_pose:.1f} ms")
 
 
 if __name__ == "__main__":

@@ -24,7 +24,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_DIR = Path(__file__).resolve().parent
+for _p in (str(_DIR), str(_DIR.parent)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import config
 from features import extract_frame_features
 from landmarkers import Tracker, hands_by_side, draw_hand, draw_pose
@@ -35,6 +39,7 @@ SUPPORTED_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 def process_single_video(video_path, word, person, tracker, flip=True, preview=False, min_frames=10):
     """
     Reads a single video file, extracts features per frame, and saves to data/raw/<word>/.
+    Uses video frame timestamps for accurate MediaPipe video tracking.
     Returns (success: bool, num_frames: int, message: str)
     """
     video_path = Path(video_path)
@@ -46,10 +51,15 @@ def process_single_video(video_path, word, person, tracker, flip=True, preview=F
         return False, 0, f"Cannot open video: {video_path}"
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    if fps <= 0 or np.isnan(fps):
+        fps = 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     frames_features = []
     frame_idx = 0
+
+    # Reset tracker gap to avoid state bleeding from previous video
+    tracker.reset()
 
     while True:
         ret, frame = cap.read()
@@ -61,7 +71,9 @@ def process_single_video(video_path, word, person, tracker, flip=True, preview=F
         if flip:
             frame = cv2.flip(frame, 1)
 
-        hand_res, pose_res, _ = tracker.process(frame)
+        # Compute accurate video timestamp in milliseconds
+        ts_ms = int(frame_idx * (1000.0 / fps))
+        hand_res, pose_res, _ = tracker.process(frame, timestamp_ms=ts_ms)
         hands = hands_by_side(hand_res)
         pose_lms = pose_res.pose_landmarks[0] if pose_res.pose_landmarks else None
 
@@ -130,7 +142,6 @@ def main():
 
     with Tracker() as tracker:
         if args.video:
-            # Process single video
             video_path = Path(args.video)
             if not video_path.exists():
                 print(f"[Error] Video file not found: {video_path}")
@@ -150,7 +161,6 @@ def main():
                 print(f"[Failed] {msg}")
 
         else:
-            # Scan input directory for gesture subfolders
             input_dir = Path(args.input_dir)
             if not input_dir.exists():
                 input_dir.mkdir(parents=True, exist_ok=True)
@@ -161,7 +171,6 @@ def main():
                 print("Then run this script again.")
                 sys.exit(0)
 
-            # Find subfolders
             gesture_dirs = sorted([d for d in input_dir.iterdir() if d.is_dir()])
             if not gesture_dirs:
                 print(f"[Warning] No gesture subfolders found inside '{input_dir}'.")

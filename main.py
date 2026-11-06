@@ -36,7 +36,10 @@ def launch_script(script_name, extra_args=None):
     script_path = ROOT / "src" / script_name
     cmd = [PYTHON, str(script_path)] + (extra_args or [])
     print(f"[Launcher] Running: {' '.join(cmd)}")
-    subprocess.run(cmd)
+    res = subprocess.run(cmd)
+    if res.returncode != 0:
+        print(f"[Launcher] Script '{script_name}' exited with error code {res.returncode}")
+        sys.exit(res.returncode)
 
 
 def main():

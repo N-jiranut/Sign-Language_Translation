@@ -1,14 +1,12 @@
 """
-Data Collection Script / สคริปต์เก็บข้อมูลท่าทางภาษามือ
-Allows recording gesture motion samples and saves them to data/raw/<gesture>/<person>_<timestamp>.npy
+Interactive Sign Language Data Collector / เก็บข้อมูลท่าทางภาษามือ
+Press SPACE to record a 1.8-second motion sequence.
+Saves extracted landmarks into data/raw/<word>/<person>_<timestamp>.npy
 
-Supports multiple gestures in a single session!
-Controls:
-  SPACE    : Start recording sample (with 3-second countdown)
-  1 - 9    : Quick switch between gestures 1 to 9
-  TAB / N  : Switch to next gesture
-  D        : Delete the last recorded sample
-  Q / ESC  : Quit
+Usage:
+    python src/collect_data.py
+    python src/collect_data.py --words hello thanks yes no
+    python src/collect_data.py --person user1
 """
 import argparse
 import sys
@@ -18,7 +16,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_DIR = Path(__file__).resolve().parent
+for _p in (str(_DIR), str(_DIR.parent)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import config
 from features import extract_frame_features
 from landmarkers import Camera, Tracker, hands_by_side, draw_hand, draw_pose
@@ -33,7 +35,7 @@ def get_sample_count(raw_dir, word, person=None):
     return len(list(folder.glob("*.npy")))
 
 
-def draw_hud(img, words_list, active_idx, person, state_text, state_color, extra_info=""):
+def draw_hud(img, words_list, active_idx, person, state_text, state_color, counts_map, extra_info=""):
     """Draw information overlay on the camera view with multi-gesture tabs."""
     h, w = img.shape[:2]
     banner_h = 95
@@ -42,18 +44,18 @@ def draw_hud(img, words_list, active_idx, person, state_text, state_color, extra
     cv2.addWeighted(overlay, 0.78, img, 0.22, 0, img)
 
     active_word = words_list[active_idx]
-    active_count = get_sample_count(config.DATA_RAW_DIR, active_word, person)
+    active_count = counts_map.get(active_word, 0)
 
     # Line 1: Gesture Selection Tabs (1 - N)
     tab_x = 15
-    for i, word in enumerate(words_list[:6]):
-        cnt = get_sample_count(config.DATA_RAW_DIR, word, person)
+    for i, word in enumerate(words_list[:8]):
+        cnt = counts_map.get(word, 0)
         is_active = (i == active_idx)
         tag = f"[{i+1}] {word} ({cnt})"
         color = (0, 255, 0) if is_active else (180, 180, 180)
         thick = 2 if is_active else 1
         cv2.putText(img, tag, (tab_x, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, thick, cv2.LINE_AA)
-        tab_x += len(tag) * 11 + 18
+        tab_x += len(tag) * 11 + 14
 
     # Line 2: Active Target Info
     header = f"Target: [{active_word.upper()}]  |  Signer: [{person}]  |  Samples Collected: {active_count}"
@@ -78,41 +80,31 @@ def main():
                         help="List of gestures to collect, e.g. --words sawasdee khopkhun chai mai_chai")
     parser.add_argument("--word", type=str, default="sawasdee",
                         help="First gesture name (default: sawasdee)")
-    parser.add_argument("--word2", type=str, default="khopkhun",
-                        help="Second gesture name (default: khopkhun)")
     parser.add_argument("--person", type=str, default=config.DEFAULT_PERSON,
-                        help="Signer/Person ID, e.g. p1, p2 (default: p1)")
+                        help=f"Signer person ID (default: {config.DEFAULT_PERSON})")
     parser.add_argument("--duration", type=float, default=1.8,
-                        help="Recording duration in seconds (default: 1.8)")
+                        help="Duration of each recording in seconds (default: 1.8)")
     args = parser.parse_args()
 
-    # Determine word list
-    if args.words:
-        words_list = args.words
-    else:
-        words_list = [args.word]
-        if args.word2 and args.word2 != args.word:
-            words_list.append(args.word2)
-
+    words_list = args.words if args.words else [args.word]
     active_idx = 0
     person = args.person
     record_duration = args.duration
 
-    config.DATA_RAW_DIR.mkdir(parents=True, exist_ok=True)
-
     cam = Camera()
-    print(f"[Ready] Camera opened at {cam.actual_size()}")
-    print(f"[Gestures] Target list: {words_list} for signer '{person}'")
-    print("[Instructions] Press SPACE to record. Press [1-9] or TAB to switch gesture. Press [D] to delete last.")
+    print(f"[Ready] Camera active at {cam.actual_size()}. Collecting gestures: {words_list}")
+    print("[Controls] SPACE = Start Countdown (3s) & Record | 1..9 = Switch Gesture | D = Delete Last | Q = Quit")
 
-    # State variables: 'idle', 'countdown', 'recording'
     state = "idle"
     countdown_start = 0.0
     rec_start = 0.0
     current_frames = []
     last_saved_file = None
-
     last_id = 0
+
+    # Cache sample counts to avoid ~210 disk IO calls per second
+    counts_map = {w: get_sample_count(config.DATA_RAW_DIR, w, person) for w in words_list}
+
     with Tracker() as tracker:
         while True:
             frame, last_id = cam.read(last_id)
@@ -125,8 +117,6 @@ def main():
             hand_res, pose_res, _ = tracker.process(frame)
             hands = hands_by_side(hand_res)
             pose_lms = pose_res.pose_landmarks[0] if pose_res.pose_landmarks else None
-
-            # Extract 112 features for this frame
             frame_vec = extract_frame_features(pose_lms, hands)
 
             # Draw visual landmarks
@@ -159,7 +149,6 @@ def main():
                 else:
                     state_text = f"GET READY: Starting in {count_num}..."
                     state_color = (0, 200, 255)
-                    # Draw a big countdown in the center
                     h, w = view.shape[:2]
                     cv2.putText(view, str(count_num), (w // 2 - 30, h // 2 + 30),
                                 cv2.FONT_HERSHEY_SIMPLEX, 3.5, (0, 220, 255), 5, cv2.LINE_AA)
@@ -170,12 +159,10 @@ def main():
                 elapsed = now - rec_start
                 progress = min(1.0, elapsed / record_duration)
 
-                # Draw big red recording circle
                 h, w = view.shape[:2]
                 cv2.circle(view, (w - 40, 40), 16, (0, 0, 255), -1)
                 cv2.putText(view, "REC", (w - 85, 47), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-                # Draw progress bar
                 bar_w = int((w - 40) * progress)
                 cv2.rectangle(view, (20, h - 45), (20 + bar_w, h - 35), (0, 0, 255), -1)
 
@@ -184,7 +171,6 @@ def main():
                 extra_info = "Perform the gesture motion"
 
                 if elapsed >= record_duration:
-                    # Save sample
                     state = "idle"
                     if len(current_frames) >= 10:
                         save_folder = config.DATA_RAW_DIR / active_word
@@ -193,12 +179,13 @@ def main():
                         file_path = save_folder / f"{person}_{ts}.npy"
                         np.save(str(file_path), np.array(current_frames, dtype=np.float32))
                         last_saved_file = file_path
+                        counts_map[active_word] = counts_map.get(active_word, 0) + 1
                         print(f"[Saved] {file_path.name} to '{active_word}/' with {len(current_frames)} frames.")
                     else:
                         print(f"[Warning] Sample had too few frames ({len(current_frames)}), discarded.")
                     current_frames = []
 
-            draw_hud(view, words_list, active_idx, person, state_text, state_color, extra_info)
+            draw_hud(view, words_list, active_idx, person, state_text, state_color, counts_map, extra_info)
             cv2.imshow("Sign Data Collector", view)
 
             key = cv2.waitKey(1) & 0xFF
@@ -219,6 +206,7 @@ def main():
             elif key in (ord("d"), ord("D")):
                 if last_saved_file and last_saved_file.exists():
                     last_saved_file.unlink()
+                    counts_map[active_word] = max(0, counts_map.get(active_word, 1) - 1)
                     print(f"[Deleted] Removed last sample: {last_saved_file.name}")
                     last_saved_file = None
 

@@ -8,14 +8,14 @@
 --------------------------------------------------------------------------------
 0. การเตรียมพร้อมและสภาพแวดล้อม (Environment)
 --------------------------------------------------------------------------------
-เปิด Terminal (PowerShell หรือ CMD) ที่โฟลเดอร์โปรเจกต์:
-  D:\KMUTT\CPE\CPE102\Sign_Language\Sign-Language_Translation
+เปิด Terminal (PowerShell หรือ CMD) ที่โฟลเดอร์โปรเจกต์นี้
 
-สามารถเรียกใช้ Python ผ่าน Virtual Environment (.venv) ได้โดยตรง:
-  .\.venv\Scripts\python.exe <ชื่อสคริปต์>
+สามารถเปิดใช้งานหน้าต่างโปรแกรม Desktop GUI หลักได้ทันทีด้วย:
+  python main.py
+(หรือ .\.venv\Scripts\python.exe main.py)
 
 (หากยังไม่มีไฟล์โมเดล MediaPipe ให้รันคำสั่งดาวน์โหลดครั้งแรก):
-  .\.venv\Scripts\python.exe src/download_models.py
+  python src/download_models.py
 
 
 --------------------------------------------------------------------------------
@@ -24,7 +24,7 @@
 ก่อนเริ่มเก็บข้อมูล แนะนำให้ทดสอบมุมกล้องและแสงสว่างก่อน:
   
   คำสั่ง:
-  .\.venv\Scripts\python.exe src/check_camera.py
+  python src/check_camera.py
 
   คำแนะนำการจัดตำแหน่งกล้อง (สำคัญมากสำหรับท่าที่มือประกบกัน เช่น สวัสดี/ไหว้):
   - ตำแหน่งกล้อง: แนะนำตั้งสูงระดับหน้าผาก หรือเหนือศีรษะ 15 - 20 ซม. แล้วก้มหน้ากล้องลงมา 20° - 30°
@@ -45,13 +45,13 @@
 คุณสามารถเลือกเก็บข้อมูลได้ 2 วิธี ตามความสะดวก:
 
 --------------------------------------------------
-วิธีที่ 2A: บันทึกสดผ่านกล้องเว็บแคม (src/collect_data.py)
+วิธีที่ 2A: บันทึกสดผ่านกล้องเว็บแคม (src/collect_data.py หรือใน Tab 2 ของ GUI)
 --------------------------------------------------
   2A.1 รันด้วยท่าเริ่มต้น (Default: sawasdee และ khopkhun):
-    .\.venv\Scripts\python.exe src/collect_data.py
+    python src/collect_data.py
 
   2A.2 กำหนดท่าทางที่ต้องการเก็บเองกี่ท่าก็ได้ ด้วย --words:
-    .\.venv\Scripts\python.exe src/collect_data.py --words sawasdee khopkhun chai mai_chai kho_thot
+    python src/collect_data.py --words sawasdee khopkhun chai mai_chai kho_thot
 
   พารามิเตอร์ที่สามารถปรับได้:
   --words    : รายชื่อท่าทางที่ต้องการเก็บ (คั่นด้วยช่องว่าง)
@@ -77,12 +77,12 @@
        videos/sawasdee/clip_02.mp4
        videos/khopkhun/clip_01.mp4
   3. รันคำสั่งสกัดพิกัดลง data/raw/ อัตโนมัติ:
-       .\.venv\Scripts\python.exe src/process_videos.py
+       python src/process_videos.py
 
   ตัวเลือกเสริมสำหรับการสกัดวิดีโอ:
-  - ดูภาพโครงร่างกระดูกสดขณะสกัด : .\.venv\Scripts\python.exe src/process_videos.py --preview
-  - วิดีโอถ่ายด้วยกล้องหลัง (ไม่ Flip): .\.venv\Scripts\python.exe src/process_videos.py --no-flip
-  - แปลงเฉพาะไฟล์เดี่ยว          : .\.venv\Scripts\python.exe src/process_videos.py --video path/to/clip.mp4 --word sawasdee
+  - ดูภาพโครงร่างกระดูกสดขณะสกัด : python src/process_videos.py --preview
+  - วิดีโอถ่ายด้วยกล้องหลัง (ไม่ Flip): python src/process_videos.py --no-flip
+  - แปลงเฉพาะไฟล์เดี่ยว          : python src/process_videos.py --video path/to/clip.mp4 --word sawasdee
 
 --------------------------------------------------
 คำแนะนำในการเก็บตัวอย่าง:
@@ -98,14 +98,14 @@
 
   วิธีที่ 3.1: เทรนโมเดล Random Forest (Baseline - เสถียรสูง เทรนเร็วมากใน 1-2 วินาที)
   คำสั่ง:
-    .\.venv\Scripts\python.exe src/train_sklearn.py
+    python src/train_sklearn.py
   ผลลัพธ์:
   - โมเดลจะถูกบันทึกไว้ที่: models/rf.pkl
   - ตารางจับคู่ชื่อท่า: models/labels.json
 
   วิธีที่ 3.2: เทรนโมเดล PyTorch GRU (เก่งเรื่องลำดับการเคลื่อนไหวตามเวลา)
   คำสั่ง:
-    .\.venv\Scripts\python.exe src/train_torch.py
+    python src/train_torch.py
   ผลลัพธ์:
   - โมเดลจะถูกบันทึกไว้ที่: models/gru.pt
   - ตารางจับคู่ชื่อท่า: models/labels.json
@@ -117,14 +117,14 @@
 รันระบบแปลผลสดผ่านกล้อง โดยระบบมีเส้น Ready Zone (ระดับอก) และ State Machine ช่วยควบคุมจังหวะ:
 
   คำสั่งรันแบบอัตโนมัติ (ตรวจจับการยกมือขึ้นสู่ระดับอกอัตโนมัติ):
-    .\.venv\Scripts\python.exe src/realtime.py
+    python src/realtime.py
 
   หรือระบุโมเดลและโหมดที่ต้องการ:
-  - ใช้โมเดล Random Forest : .\.venv\Scripts\python.exe src/realtime.py --model rf
-  - ใช้โมเดล PyTorch GRU   : .\.venv\Scripts\python.exe src/realtime.py --model gru
-  - ใช้โหมดกดปุ่ม Spacebar  : .\.venv\Scripts\python.exe src/realtime.py --mode manual
-  - ปรับเกณฑ์ความมั่นใจ 75%: .\.venv\Scripts\python.exe src/realtime.py --threshold 0.75
-  - ปรับระยะเวลาทำท่า 2 วิ : .\.venv\Scripts\python.exe src/realtime.py --duration 2.0
+  - ใช้โมเดล Random Forest : python src/realtime.py --model rf
+  - ใช้โมเดล PyTorch GRU   : python src/realtime.py --model gru
+  - ใช้โหมดกดปุ่ม Spacebar  : python src/realtime.py --mode manual
+  - ปรับเกณฑ์ความมั่นใจ 75%: python src/realtime.py --threshold 0.75
+  - ปรับระยะเวลาทำท่า 2 วิ : python src/realtime.py --duration 2.0
 
   ขั้นตอนการทำงานบนหน้าจอ (State Machine):
   1. IDLE (รอ): มีเส้นประ "READY LINE (Chest)" ระดับอก เมื่อมืออยู่ต่ำกว่าเส้น ระบบจะไม่แปล
@@ -142,11 +142,13 @@
 5. สรุปโครงสร้างโฟลเดอร์ของระบบ
 --------------------------------------------------------------------------------
 Sign-Language_Translation/
+├── main.py                   # ตัวเรียกโปรแกรมหลัก (GUI App & CLI Launcher)
 ├── config.py                 # การตั้งค่ากล้อง, เฟรม, และพิกัด landmarks
 ├── USAGE_GUIDE.txt           # ไฟล์คู่มือการใช้งานนี้
 ├── requirements.txt          # รายการ Library ที่โปรเจกต์ต้องใช้
 │
 ├── src/
+│   ├── ui_app.py             # Desktop GUI สองฝั่ง (Live Translation & Gesture Studio)
 │   ├── check_camera.py       # ตรวจสอบกล้องและตำแหน่งผู้ใช้
 │   ├── collect_data.py       # บันทึกข้อมูลท่วงท่าเก็บเป็นไฟล์ .npy จากกล้องสด
 │   ├── process_videos.py     # สกัดข้อมูลท่วงท่าจากไฟล์วิดีโอ (.mp4/.mov) ลง data/raw
@@ -163,6 +165,7 @@ Sign-Language_Translation/
 │   └── README.txt
 │
 ├── data/
+│   ├── scenario_presets.json # คลังคำศัพท์และข้อความตอบกลับตามบริบทสถานการณ์
 │   └── raw/                  # ข้อมูลตัวอย่างแยกตามโฟลเดอร์ชื่อท่า (.npy)
 │       ├── sawasdee/
 │       └── khopkhun/
