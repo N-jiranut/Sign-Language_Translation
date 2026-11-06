@@ -10,6 +10,7 @@ Includes:
 import os
 import sys
 import time
+import json
 import threading
 import subprocess
 from pathlib import Path
@@ -47,6 +48,76 @@ try:
     from torch.utils.data import TensorDataset, DataLoader
 except ImportError:
     torch = None
+
+
+# --------------------------------------------------------------------------
+# Scenario Presets Definitions & Dynamic JSON Loader (data/scenario_presets.json)
+# --------------------------------------------------------------------------
+DEFAULT_SCENARIOS = {
+    "Hospital & Clinic": {
+        "icon": "🏥",
+        "tag_color": "#00E5FF",
+        "description": "Medical Consultation & Patient Triage",
+        "staff_replies": [
+            "Wait for doctor", "Take medication", "Follow nurse", "Room 101", "Where does it hurt?", "Please sit & rest"
+        ],
+        "recommended_signs": ["hospital", "doctor", "medicine", "pain", "help", "yes", "no", "thank_you"]
+    },
+    "General Services": {
+        "icon": "🏢",
+        "tag_color": "#FFD600",
+        "description": "Information & Customer Reception",
+        "staff_replies": [
+            "Please wait a moment", "Follow me please", "Take queue ticket", "Proceed to Counter 3", "Please sign here", "Thank you"
+        ],
+        "recommended_signs": ["hello", "thank_you", "sorry", "yes", "no", "help", "finish"]
+    },
+    "Police & Emergency": {
+        "icon": "🚨",
+        "tag_color": "#FF5252",
+        "description": "Crisis Reporting & Incident Triage",
+        "staff_replies": [
+            "Filing report now", "Stay calm, you are safe", "Officer is coming", "Can you write details?", "Emergency room", "Need ambulance?"
+        ],
+        "recommended_signs": ["help", "emergency", "police", "danger", "hospital", "yes", "no"]
+    },
+    "University & Classroom": {
+        "icon": "🎓",
+        "tag_color": "#40C4FF",
+        "description": "Academic & Lecture Room Support",
+        "staff_replies": [
+            "Class starts soon", "Submit assignment", "Room 304", "Please see instructor", "Library on 2nd floor", "Exam in progress"
+        ],
+        "recommended_signs": ["hello", "thank_you", "question", "finish", "book", "yes", "no"]
+    }
+}
+
+def load_scenario_data():
+    """Loads scenario definitions from data/scenario_presets.json with fallbacks."""
+    file_path = getattr(config, "PRESETS_CONFIG_PATH", config.DATA_DIR / "scenario_presets.json")
+    data = DEFAULT_SCENARIOS
+    if file_path.exists():
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict) and loaded:
+                    data = loaded
+        except Exception as e:
+            print("Error loading scenario_presets.json:", e)
+
+    staff_map = {}
+    gesture_map = {}
+    hints_map = {}
+    for name, item in data.items():
+        staff_map[name] = item.get("staff_replies", [])
+        gesture_map[name] = item.get("recommended_signs", [])
+        icon = item.get("icon", "🏢")
+        color = item.get("tag_color", "#00E5FF")
+        desc = item.get("description", "")
+        signs_str = ", ".join(item.get("recommended_signs", []))
+        hints_map[name] = (f"{icon} Mode: {name} ({desc})", color, f"Context Signs: {signs_str}")
+
+    return staff_map, gesture_map, hints_map, list(data.keys())
 
 
 # --------------------------------------------------------------------------
@@ -90,6 +161,7 @@ class SignLanguageApp(tk.Tk):
         self._setup_styles()
 
         # Model & State Variables
+        self.scenario_staff_replies, self.scenario_gesture_presets, self.scenario_hints, self.scenario_list = load_scenario_data()
         self.model_type = "gru"  # 'gru' or 'rf'
         self.classifier = None
         self.id_to_label = {}
@@ -97,7 +169,7 @@ class SignLanguageApp(tk.Tk):
         self.auto_speak = tk.BooleanVar(value=True)
         self.show_skeleton = tk.BooleanVar(value=True)
         self.trigger_mode = tk.StringVar(value="auto")  # 'auto' or 'manual'
-        self.selected_scenario = tk.StringVar(value="Hospital & Clinic")
+        self.selected_scenario = tk.StringVar(value=self.scenario_list[0] if self.scenario_list else "Hospital & Clinic")
         self.active_model_name = tk.StringVar(value="PyTorch GRU")
 
         # Studio variables (Tab 2)
@@ -126,6 +198,9 @@ class SignLanguageApp(tk.Tk):
         self._build_header()
         self._build_main_content()
         self._build_footer()
+
+        # Initialize Scenario Presets
+        self._render_scenario_buttons()
 
         # Keyboard shortcuts
         self.bind("<space>", lambda e: self.trigger_manual_record())
@@ -189,10 +264,14 @@ class SignLanguageApp(tk.Tk):
         scenario_box = tk.Frame(header_frame, bg="#181818")
         scenario_box.pack(side="left", padx=20)
         tk.Label(scenario_box, text="Scenario: ", font=("Segoe UI", 9), fg=self.C_MUTED, bg="#181818").pack(side="left")
-        combo = ttk.Combobox(scenario_box, textvariable=self.selected_scenario, values=[
-            "Hospital & Clinic", "General Services", "Police & Emergency", "University & Classroom"
-        ], state="readonly", width=18)
-        combo.pack(side="left")
+        self.combo_scenario = ttk.Combobox(scenario_box, textvariable=self.selected_scenario, values=self.scenario_list, state="readonly", width=18)
+        self.combo_scenario.pack(side="left")
+        self.combo_scenario.bind("<<ComboboxSelected>>", self._on_scenario_switch)
+
+        btn_edit_cfg = tk.Button(scenario_box, text="⚙️ Presets", font=("Segoe UI", 8),
+                                 bg=self.C_CARD_LIGHT, fg=self.C_ACCENT_CYAN, activebackground=self.C_BORDER,
+                                 relief="flat", padx=6, pady=2, cursor="hand2", command=self.open_presets_settings)
+        btn_edit_cfg.pack(side="left", padx=(6, 0))
 
         # Model Selector Dropdown
         model_box = tk.Frame(header_frame, bg="#181818")
@@ -219,10 +298,11 @@ class SignLanguageApp(tk.Tk):
     # ----------------------------------------------------------------------
     def _build_main_content(self):
         content_frame = tk.Frame(self, bg=self.C_BG)
-        content_frame.pack(side="top", fill="both", expand=True, padx=14, pady=12)
+        content_frame.pack(side="top", fill="both", expand=True, padx=12, pady=10)
 
-        content_frame.columnconfigure(0, weight=6, minsize=580)
-        content_frame.columnconfigure(1, weight=4, minsize=440)
+        # Equal 50/50 split between Camera Viewfinder and Translation Hub
+        content_frame.columnconfigure(0, weight=1, uniform="panels")
+        content_frame.columnconfigure(1, weight=1, uniform="panels")
         content_frame.rowconfigure(0, weight=1)
 
         # Left Panel (Viewfinder)
@@ -236,11 +316,11 @@ class SignLanguageApp(tk.Tk):
     # ----------------------------------------------------------------------
     def _build_left_viewfinder(self, parent):
         left_card = tk.Frame(parent, bg=self.C_CARD, highlightbackground=self.C_BORDER, highlightthickness=1)
-        left_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
 
         # Title bar of viewfinder
         v_head = tk.Frame(left_card, bg=self.C_CARD)
-        v_head.pack(fill="x", padx=14, pady=(10, 6))
+        v_head.pack(fill="x", padx=14, pady=(8, 4))
 
         tk.Label(v_head, text="Camera Viewfinder & Motion Tracker", font=("Segoe UI", 11, "bold"),
                  fg=self.C_TEXT, bg=self.C_CARD).pack(side="left")
@@ -255,55 +335,60 @@ class SignLanguageApp(tk.Tk):
         self.canvas_video.pack(fill="both", expand=True, padx=12, pady=4)
 
         # Environmental Diagnostics Bar
-        diag_frame = tk.Frame(left_card, bg=self.C_CARD_LIGHT, height=32)
-        diag_frame.pack(fill="x", padx=12, pady=6)
+        diag_frame = tk.Frame(left_card, bg=self.C_CARD_LIGHT, height=30)
+        diag_frame.pack(fill="x", padx=12, pady=4)
 
         self.lbl_distance = tk.Label(diag_frame, text="📏 Distance: --", font=("Segoe UI", 9), fg=self.C_MUTED, bg=self.C_CARD_LIGHT)
-        self.lbl_distance.pack(side="left", padx=10, pady=4)
+        self.lbl_distance.pack(side="left", padx=10, pady=3)
 
         self.lbl_hands_found = tk.Label(diag_frame, text="✋ Hands: L[-] R[-]", font=("Segoe UI", 9), fg=self.C_MUTED, bg=self.C_CARD_LIGHT)
-        self.lbl_hands_found.pack(side="left", padx=15, pady=4)
+        self.lbl_hands_found.pack(side="left", padx=12, pady=3)
 
         self.lbl_fps = tk.Label(diag_frame, text="⚡ FPS: 0.0", font=("Segoe UI", 9), fg=self.C_MUTED, bg=self.C_CARD_LIGHT)
-        self.lbl_fps.pack(side="right", padx=10, pady=4)
+        self.lbl_fps.pack(side="right", padx=10, pady=3)
 
-        # Viewfinder Control Bar
+        # Viewfinder Control Bar (Clean 2-Row Layout to prevent any text clipping)
         ctrl_frame = tk.Frame(left_card, bg=self.C_CARD)
-        ctrl_frame.pack(fill="x", padx=12, pady=(4, 12))
+        ctrl_frame.pack(fill="x", padx=12, pady=(4, 10))
 
-        # Start/Stop Button
-        self.btn_camera = tk.Button(ctrl_frame, text="▶ Start Camera", font=("Segoe UI", 10, "bold"),
+        # Row 1: Camera Actions & Skeleton Toggle
+        row1 = tk.Frame(ctrl_frame, bg=self.C_CARD)
+        row1.pack(fill="x", pady=(0, 4))
+
+        self.btn_camera = tk.Button(row1, text="▶ Start Camera", font=("Segoe UI", 9, "bold"),
                                     bg=self.C_ACCENT_GREEN, fg="#121212", activebackground="#00C853",
-                                    relief="flat", padx=14, pady=5, command=self.toggle_camera)
-        self.btn_camera.pack(side="left", padx=(0, 8))
+                                    relief="flat", padx=12, pady=4, cursor="hand2", command=self.toggle_camera)
+        self.btn_camera.pack(side="left", padx=(0, 6))
 
-        # Manual Trigger Button
-        self.btn_trigger = tk.Button(ctrl_frame, text="🔘 Trigger (Space)", font=("Segoe UI", 9),
+        self.btn_trigger = tk.Button(row1, text="🔘 Trigger (Space)", font=("Segoe UI", 9),
                                      bg=self.C_CARD_LIGHT, fg=self.C_TEXT, activebackground=self.C_BORDER,
-                                     relief="flat", padx=10, pady=5, command=self.trigger_manual_record)
+                                     relief="flat", padx=10, pady=4, cursor="hand2", command=self.trigger_manual_record)
         self.btn_trigger.pack(side="left", padx=4)
 
-        # Trigger Mode Radio
-        tk.Label(ctrl_frame, text="Trigger:", font=("Segoe UI", 9), fg=self.C_MUTED, bg=self.C_CARD).pack(side="left", padx=(10, 4))
-        tk.Radiobutton(ctrl_frame, text="Auto (Chest Line)", variable=self.trigger_mode, value="auto",
-                       bg=self.C_CARD, fg=self.C_TEXT, selectcolor=self.C_CARD_LIGHT, activebackground=self.C_CARD,
-                       font=("Segoe UI", 9)).pack(side="left")
-        tk.Radiobutton(ctrl_frame, text="Manual", variable=self.trigger_mode, value="manual",
-                       bg=self.C_CARD, fg=self.C_TEXT, selectcolor=self.C_CARD_LIGHT, activebackground=self.C_CARD,
-                       font=("Segoe UI", 9)).pack(side="left", padx=(4, 0))
-
-        # Skeleton Checkbox
-        chk_skel = tk.Checkbutton(ctrl_frame, text="Skeleton", variable=self.show_skeleton,
+        chk_skel = tk.Checkbutton(row1, text="Skeleton Overlay", variable=self.show_skeleton,
                                   bg=self.C_CARD, fg=self.C_TEXT, selectcolor=self.C_CARD_LIGHT,
                                   activebackground=self.C_CARD, font=("Segoe UI", 9))
         chk_skel.pack(side="right")
+
+        # Row 2: Detection Mode Selector
+        row2 = tk.Frame(ctrl_frame, bg=self.C_CARD)
+        row2.pack(fill="x", pady=(2, 0))
+
+        tk.Label(row2, text="Trigger Mode:", font=("Segoe UI", 9, "bold"), fg=self.C_MUTED, bg=self.C_CARD).pack(side="left", padx=(0, 6))
+        
+        tk.Radiobutton(row2, text="Auto (Chest Line)", variable=self.trigger_mode, value="auto",
+                       bg=self.C_CARD, fg=self.C_TEXT, selectcolor=self.C_CARD_LIGHT, activebackground=self.C_CARD,
+                       font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
+        tk.Radiobutton(row2, text="Manual (Spacebar)", variable=self.trigger_mode, value="manual",
+                       bg=self.C_CARD, fg=self.C_TEXT, selectcolor=self.C_CARD_LIGHT, activebackground=self.C_CARD,
+                       font=("Segoe UI", 9)).pack(side="left")
 
     # ----------------------------------------------------------------------
     # Right Tabbed Hub (Tab 1: Live Translation | Tab 2: Gesture Studio)
     # ----------------------------------------------------------------------
     def _build_right_tabbed_hub(self, parent):
         right_container = tk.Frame(parent, bg=self.C_BG)
-        right_container.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right_container.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
         self.notebook = ttk.Notebook(right_container)
         self.notebook.pack(fill="both", expand=True)
@@ -322,93 +407,164 @@ class SignLanguageApp(tk.Tk):
     # Tab 1: Translation Hub View
     # ----------------------------------------------------------------------
     def _build_tab_translation(self, parent):
-        # 1. HERO RESULT CARD
-        hero_frame = tk.Frame(parent, bg="#16222F", highlightbackground=self.C_ACCENT_CYAN, highlightthickness=1)
-        hero_frame.pack(fill="x", padx=12, pady=(12, 8))
+        # 1. HERO RESULT CARD (Packed at TOP)
+        hero_frame = tk.Frame(parent, bg="#15212E", highlightbackground=self.C_ACCENT_CYAN, highlightthickness=1)
+        hero_frame.pack(side="top", fill="x", padx=12, pady=(8, 4))
 
-        h_title_bar = tk.Frame(hero_frame, bg="#16222F")
-        h_title_bar.pack(fill="x", padx=12, pady=(8, 2))
-        tk.Label(h_title_bar, text="TRANSLATED SIGN OUTPUT", font=("Segoe UI", 8, "bold"), fg=self.C_ACCENT_CYAN, bg="#16222F").pack(side="left")
-        
-        self.lbl_conf_tag = tk.Label(h_title_bar, text="Confidence: --%", font=("Segoe UI", 8, "bold"), fg=self.C_MUTED, bg="#16222F")
+        h_title_bar = tk.Frame(hero_frame, bg="#15212E")
+        h_title_bar.pack(fill="x", padx=12, pady=(6, 2))
+        tk.Label(h_title_bar, text="TRANSLATED SIGN OUTPUT", font=("Segoe UI", 8, "bold"), fg=self.C_ACCENT_CYAN, bg="#15212E").pack(side="left")
+
+        self.lbl_scenario_tag = tk.Label(h_title_bar, text=f"[{self.selected_scenario.get()}]", font=("Segoe UI", 8, "bold"), fg=self.C_ACCENT_CYAN, bg="#15212E")
+        self.lbl_scenario_tag.pack(side="left", padx=8)
+
+        self.lbl_conf_tag = tk.Label(h_title_bar, text="Confidence: --%", font=("Segoe UI", 8, "bold"), fg=self.C_MUTED, bg="#15212E")
         self.lbl_conf_tag.pack(side="right")
 
         # Large English Word Display
-        self.lbl_hero_word = tk.Label(hero_frame, text="Awaiting Sign...", font=("Segoe UI", 26, "bold"),
-                                      fg=self.C_TEXT, bg="#16222F", pady=10)
+        self.lbl_hero_word = tk.Label(hero_frame, text="Awaiting Sign...", font=("Segoe UI", 24, "bold"),
+                                      fg=self.C_TEXT, bg="#15212E", pady=4)
         self.lbl_hero_word.pack()
 
+        # Context Guidance / Hint
+        init_hint = self.scenario_hints.get(self.selected_scenario.get(), ("", "", ""))[2]
+        self.lbl_scenario_hint = tk.Label(
+            hero_frame,
+            text=init_hint,
+            font=("Segoe UI", 8),
+            fg="#8BA3BA",
+            bg="#15212E"
+        )
+        self.lbl_scenario_hint.pack(pady=(0, 4))
+
         # Confidence Bar (Canvas)
-        self.canvas_conf_bar = tk.Canvas(hero_frame, height=6, bg="#0D161F", highlightthickness=0)
-        self.canvas_conf_bar.pack(fill="x", padx=14, pady=(0, 10))
+        self.canvas_conf_bar = tk.Canvas(hero_frame, height=5, bg="#0D161F", highlightthickness=0)
+        self.canvas_conf_bar.pack(fill="x", padx=14, pady=(0, 8))
 
         # Hero Action Bar (Speak button, Auto-TTS toggle)
-        h_actions = tk.Frame(hero_frame, bg="#16222F")
-        h_actions.pack(fill="x", padx=12, pady=(0, 10))
+        h_actions = tk.Frame(hero_frame, bg="#15212E")
+        h_actions.pack(fill="x", padx=12, pady=(0, 8))
 
         self.btn_speak = tk.Button(h_actions, text="🔊 Speak (Audio)", font=("Segoe UI", 9, "bold"),
                                    bg=self.C_ACCENT_CYAN, fg="#121212", activebackground="#00B0FF",
-                                   relief="flat", padx=10, pady=3, command=self.speak_current_sign)
+                                   relief="flat", padx=10, pady=2, command=self.speak_current_sign)
         self.btn_speak.pack(side="left")
 
         chk_tts = tk.Checkbutton(h_actions, text="Auto-Speak on detect", variable=self.auto_speak,
-                                 bg="#16222F", fg=self.C_TEXT, selectcolor="#0D161F",
-                                 activebackground="#16222F", font=("Segoe UI", 9))
+                                 bg="#15212E", fg=self.C_TEXT, selectcolor="#0D161F",
+                                 activebackground="#15212E", font=("Segoe UI", 9))
         chk_tts.pack(side="left", padx=10)
 
-        # 2. CONVERSATION TIMELINE / LOG
-        tk.Label(parent, text="Conversation Timeline", font=("Segoe UI", 10, "bold"),
-                 fg=self.C_TEXT, bg=self.C_CARD).pack(anchor="w", padx=14, pady=(8, 4))
+        # 2. TWO-WAY STAFF RESPONSE (Packed at BOTTOM so it is ALWAYS visible and never pushed off!)
+        two_way_frame = tk.LabelFrame(
+            parent,
+            text=" 💬 Staff Two-Way Communicator (Display to Signer) ",
+            font=("Segoe UI", 9, "bold"),
+            fg=self.C_ACCENT_GREEN,
+            bg="#16202C",
+            highlightbackground="#27394D",
+            highlightthickness=1,
+            padx=10,
+            pady=6
+        )
+        two_way_frame.pack(side="bottom", fill="x", padx=12, pady=(4, 10))
 
+        # Instructions / Context Bar + Edit Presets Button
+        tw_bar = tk.Frame(two_way_frame, bg="#16202C")
+        tw_bar.pack(fill="x", padx=2, pady=(0, 2))
+
+        lbl_hint = tk.Label(
+            tw_bar,
+            text="Quick response presets (Click to send instantly):",
+            font=("Segoe UI", 8),
+            fg="#8FA3B8",
+            bg="#16202C"
+        )
+        lbl_hint.pack(side="left")
+
+        btn_edit_words = tk.Button(
+            tw_bar,
+            text="⚙️ Edit Words",
+            font=("Segoe UI", 8),
+            bg="#203040",
+            fg="#80D8FF",
+            activebackground="#2E445B",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            padx=6,
+            pady=1,
+            cursor="hand2",
+            command=self.open_presets_settings
+        )
+        btn_edit_words.pack(side="right")
+
+        # Quick preset buttons (dynamically populated based on Scenario in 2 rows)
+        self.quick_frame = tk.Frame(two_way_frame, bg="#16202C")
+        self.quick_frame.pack(fill="x", padx=0, pady=(1, 4))
+
+        # Custom Reply Input Row
+        input_box = tk.Frame(two_way_frame, bg="#16202C")
+        input_box.pack(fill="x", padx=0, pady=(2, 2))
+
+        self.entry_reply = tk.Entry(
+            input_box,
+            font=("Segoe UI", 10),
+            bg="#0D151E",
+            fg="#FFFFFF",
+            insertbackground="#00E5FF",
+            relief="flat",
+            highlightbackground="#2F445B",
+            highlightcolor=self.C_ACCENT_GREEN,
+            highlightthickness=1
+        )
+        self.entry_reply.pack(side="left", fill="x", expand=True, padx=(0, 6), ipady=5)
+        self.entry_reply.bind("<Return>", lambda e: self.send_staff_reply(self.entry_reply.get()))
+
+        btn_send = tk.Button(
+            input_box,
+            text=" Send Reply ↵ ",
+            font=("Segoe UI", 9, "bold"),
+            bg=self.C_ACCENT_GREEN,
+            fg="#0A1E11",
+            activebackground="#00C853",
+            activeforeground="#000000",
+            relief="flat",
+            padx=14,
+            pady=4,
+            cursor="hand2",
+            command=lambda: self.send_staff_reply(self.entry_reply.get())
+        )
+        btn_send.pack(side="right")
+
+        # 3. CONVERSATION TIMELINE HEADER (Packed at TOP after Hero)
+        t_header = tk.Frame(parent, bg=self.C_CARD)
+        t_header.pack(side="top", fill="x", padx=14, pady=(4, 2))
+        tk.Label(t_header, text="Conversation Timeline", font=("Segoe UI", 11, "bold"),
+                 fg=self.C_TEXT, bg=self.C_CARD).pack(side="left")
+        tk.Button(t_header, text="🗑 Clear Log", font=("Segoe UI", 8), bg="#222C38", fg=self.C_MUTED,
+                  activebackground="#2F3E50", activeforeground="#FFFFFF",
+                  relief="flat", padx=8, pady=1, cursor="hand2", command=self.clear_log).pack(side="right")
+
+        # 4. CONVERSATION TIMELINE LOG CONTAINER (Packed to fill whatever remaining middle space!)
         log_container = tk.Frame(parent, bg=self.C_CARD)
-        log_container.pack(fill="both", expand=True, padx=12, pady=2)
+        log_container.pack(side="top", fill="both", expand=True, padx=12, pady=2)
 
-        self.txt_timeline = tk.Text(log_container, bg="#161616", fg=self.C_TEXT, font=("Segoe UI", 9),
-                                    wrap="word", relief="flat", padx=8, pady=8, state="disabled")
+        self.txt_timeline = tk.Text(log_container, bg="#121820", fg=self.C_TEXT, font=("Segoe UI", 11),
+                                    wrap="word", relief="flat", padx=12, pady=8, state="disabled",
+                                    height=6, highlightthickness=1, highlightbackground="#202C3A")
+        self.txt_timeline.tag_config("time", foreground="#788899", font=("Consolas", 9))
+        self.txt_timeline.tag_config("signer", foreground="#00E5FF", font=("Segoe UI", 11, "bold"))
+        self.txt_timeline.tag_config("signer_body", foreground="#FFFFFF", font=("Segoe UI", 12, "bold"))
+        self.txt_timeline.tag_config("staff", foreground="#00E676", font=("Segoe UI", 11, "bold"))
+        self.txt_timeline.tag_config("staff_body", foreground="#E8F5E9", font=("Segoe UI", 11))
+        self.txt_timeline.tag_config("system", foreground="#FFD600", font=("Segoe UI", 10, "bold"))
+        self.txt_timeline.tag_config("system_body", foreground="#FFE082", font=("Segoe UI", 10, "italic"))
+
         self.txt_timeline.pack(side="left", fill="both", expand=True)
 
         scrollbar = ttk.Scrollbar(log_container, orient="vertical", command=self.txt_timeline.yview)
         scrollbar.pack(side="right", fill="y")
         self.txt_timeline.config(yscrollcommand=scrollbar.set)
-
-        # Timeline helper buttons
-        t_btn_box = tk.Frame(parent, bg=self.C_CARD)
-        t_btn_box.pack(fill="x", padx=12, pady=(4, 8))
-        tk.Button(t_btn_box, text="Clear Log", font=("Segoe UI", 8), bg=self.C_CARD_LIGHT, fg=self.C_MUTED,
-                  relief="flat", padx=6, command=self.clear_log).pack(side="right")
-
-        # 3. TWO-WAY STAFF RESPONSE (For hearing person to reply to deaf user)
-        two_way_frame = tk.Frame(parent, bg=self.C_CARD_LIGHT, highlightbackground=self.C_BORDER, highlightthickness=1)
-        two_way_frame.pack(fill="x", padx=12, pady=(0, 12))
-
-        tw_head = tk.Frame(two_way_frame, bg=self.C_CARD_LIGHT)
-        tw_head.pack(fill="x", padx=10, pady=(6, 2))
-        tk.Label(tw_head, text="💬 Staff Two-Way Reply (Display to Signer)", font=("Segoe UI", 9, "bold"),
-                 fg=self.C_ACCENT_GREEN, bg=self.C_CARD_LIGHT).pack(side="left")
-
-        # Quick preset buttons
-        quick_frame = tk.Frame(two_way_frame, bg=self.C_CARD_LIGHT)
-        quick_frame.pack(fill="x", padx=10, pady=2)
-        presets = ["Yes", "No", "Please wait a moment", "Follow me please"]
-        for p in presets:
-            btn = tk.Button(quick_frame, text=p, font=("Segoe UI", 8), bg=self.C_BORDER, fg=self.C_TEXT,
-                            relief="flat", padx=5, pady=1,
-                            command=lambda msg=p: self.send_staff_reply(msg))
-            btn.pack(side="left", padx=2)
-
-        # Input & Send
-        input_box = tk.Frame(two_way_frame, bg=self.C_CARD_LIGHT)
-        input_box.pack(fill="x", padx=10, pady=(4, 8))
-
-        self.entry_reply = tk.Entry(input_box, font=("Segoe UI", 10), bg="#141414", fg=self.C_TEXT,
-                                    insertbackground=self.C_TEXT, relief="flat", highlightbackground=self.C_BORDER, highlightthickness=1)
-        self.entry_reply.pack(side="left", fill="x", expand=True, padx=(0, 6), ipady=3)
-        self.entry_reply.bind("<Return>", lambda e: self.send_staff_reply(self.entry_reply.get()))
-
-        btn_send = tk.Button(input_box, text="Send ↵", font=("Segoe UI", 9, "bold"), bg=self.C_ACCENT_GREEN,
-                             fg="#121212", relief="flat", padx=10, pady=3,
-                             command=lambda: self.send_staff_reply(self.entry_reply.get()))
-        btn_send.pack(side="right")
 
     # ----------------------------------------------------------------------
     # Tab 2: Gesture Studio & 1-Click AI Retrainer
@@ -432,13 +588,9 @@ class SignLanguageApp(tk.Tk):
                                    width=18, relief="flat", highlightbackground=self.C_BORDER, highlightthickness=1)
         self.entry_word.pack(side="left", padx=8)
 
-        # Quick preset words
-        presets_box = tk.Frame(sec1, bg=self.C_CARD)
-        presets_box.pack(fill="x", pady=4)
-        tk.Label(presets_box, text="Quick Presets:", font=("Segoe UI", 8), fg=self.C_MUTED, bg=self.C_CARD).pack(side="left")
-        for w in ["hello", "thank_you", "hospital", "yes", "no", "sorry", "help"]:
-            tk.Button(presets_box, text=w, font=("Segoe UI", 8), bg=self.C_BORDER, fg=self.C_TEXT, relief="flat",
-                      command=lambda val=w: self.studio_target_word.set(val)).pack(side="left", padx=2)
+        # Quick preset words (dynamically populated based on Scenario)
+        self.presets_box = tk.Frame(sec1, bg=self.C_CARD)
+        self.presets_box.pack(fill="x", pady=4)
 
         # Action: Record 1 Sample
         row2 = tk.Frame(sec1, bg=self.C_CARD)
@@ -504,8 +656,92 @@ class SignLanguageApp(tk.Tk):
         self.lbl_footer_tech.pack(side="right", padx=16, pady=4)
 
     # ----------------------------------------------------------------------
-    # AI Model Loading & Inference
+    # AI Model & Scenario Context Switching
     # ----------------------------------------------------------------------
+    def _on_scenario_switch(self, event=None):
+        self.reload_scenario_presets()
+        scenario = self.selected_scenario.get()
+        self._append_to_timeline("⚙️ [System]", f"Switched context to [{scenario}]. Quick replies & recommended signs updated.", "system")
+
+    def reload_scenario_presets(self):
+        """Reloads scenario presets dynamically from data/scenario_presets.json."""
+        self.scenario_staff_replies, self.scenario_gesture_presets, self.scenario_hints, self.scenario_list = load_scenario_data()
+        if hasattr(self, "combo_scenario"):
+            self.combo_scenario.config(values=self.scenario_list)
+        self._render_scenario_buttons()
+
+    def open_presets_settings(self):
+        """Opens data/scenario_presets.json in default editor so user can customize words."""
+        file_path = getattr(config, "PRESETS_CONFIG_PATH", config.DATA_DIR / "scenario_presets.json")
+        if file_path.exists():
+            try:
+                os.startfile(str(file_path))
+            except Exception:
+                subprocess.run(["notepad.exe", str(file_path)])
+            messagebox.showinfo(
+                "Customize Scenario Presets",
+                f"Opened preset configuration file:\n\n{file_path}\n\n"
+                "• You can edit or add custom staff quick replies ('staff_replies')\n"
+                "• You can edit or add recommended gesture words ('recommended_signs')\n"
+                "• Save the file in Notepad / VS Code, then re-select the Scenario in the app to apply changes instantly!"
+            )
+        else:
+            messagebox.showwarning("File Not Found", f"Cannot find: {file_path}")
+
+    def _render_scenario_buttons(self):
+        scenario = self.selected_scenario.get()
+        hint_info = self.scenario_hints.get(scenario, ("General", self.C_ACCENT_CYAN, ""))
+
+        # Update Scenario Badge and Hint in Hero Card
+        if hasattr(self, "lbl_scenario_tag"):
+            self.lbl_scenario_tag.config(text=f"[{scenario}]", fg=hint_info[1])
+        if hasattr(self, "lbl_scenario_hint"):
+            self.lbl_scenario_hint.config(text=hint_info[2])
+
+        # 1. Update Staff Two-Way Replies with styled chip buttons in 2 neat rows
+        if hasattr(self, "quick_frame"):
+            for widget in self.quick_frame.winfo_children():
+                widget.destroy()
+            replies = self.scenario_staff_replies.get(scenario, ["Please wait a moment", "Follow me please"])
+            row1 = tk.Frame(self.quick_frame, bg="#16202C")
+            row1.pack(fill="x", pady=2)
+            row2 = tk.Frame(self.quick_frame, bg="#16202C")
+            row2.pack(fill="x", pady=2)
+
+            for idx, p in enumerate(replies):
+                target_row = row1 if idx < 3 else row2
+                btn = tk.Button(
+                    target_row,
+                    text=f"💬 {p}",
+                    font=("Segoe UI", 8, "bold"),
+                    bg="#223648",
+                    fg="#00E5FF",
+                    activebackground="#00B0FF",
+                    activeforeground="#FFFFFF",
+                    relief="flat",
+                    bd=0,
+                    padx=8,
+                    pady=3,
+                    cursor="hand2",
+                    command=lambda msg=p: self.send_staff_reply(msg)
+                )
+                btn.pack(side="left", padx=2, pady=1)
+
+        # 2. Update Studio Suggested Gesture Words
+        if hasattr(self, "presets_box"):
+            for widget in self.presets_box.winfo_children():
+                widget.destroy()
+            tk.Label(self.presets_box, text="Scenario Presets:", font=("Segoe UI", 8, "bold"), fg=self.C_MUTED, bg=self.C_CARD).pack(side="left", padx=(0, 6))
+            words = self.scenario_gesture_presets.get(scenario, ["hello", "thank_you", "yes", "no"])
+            for w in words:
+                btn = tk.Button(self.presets_box, text=w, font=("Segoe UI", 8, "bold"),
+                                bg="#263238", fg="#80D8FF", activebackground="#37474F", activeforeground="#FFFFFF",
+                                relief="flat", padx=8, pady=3, cursor="hand2",
+                                command=lambda val=w: self.studio_target_word.set(val))
+                btn.pack(side="left", padx=2)
+            if words:
+                self.studio_target_word.set(words[0])
+
     def _on_model_switch(self, event=None):
         name = self.active_model_name.get()
         if "GRU" in name:
@@ -794,8 +1030,7 @@ class SignLanguageApp(tk.Tk):
 
         # Append to Conversation Timeline
         if conf >= 0.50 and label not in ("(No motion)", "Unknown", "Untrained Model"):
-            ts = time.strftime("%H:%M:%S")
-            self._append_to_timeline(f"🤟 [Signer] {clean_label} ({int(conf * 100)}%)", "#00E5FF")
+            self._append_to_timeline("🤟 [Signer]", f"{clean_label} ({int(conf * 100)}%)", "signer")
 
             # Auto-speak if enabled
             if self.auto_speak.get():
@@ -812,14 +1047,33 @@ class SignLanguageApp(tk.Tk):
         msg = message.strip()
         if not msg:
             return
-        ts = time.strftime("%H:%M:%S")
-        self._append_to_timeline(f"👨‍💼 [Staff] {msg}", self.C_ACCENT_GREEN)
+        self._append_to_timeline("👨‍💼 [Staff]", msg, "staff")
         self.entry_reply.delete(0, tk.END)
 
-    def _append_to_timeline(self, text, color):
+    def _append_to_timeline(self, speaker_badge, text_content, tag_type="signer"):
+        """
+        Appends styled, highly readable chat message into the timeline.
+        tag_type: 'signer', 'staff', or 'system'
+        """
         ts = time.strftime("%H:%M:%S")
         self.txt_timeline.config(state="normal")
-        self.txt_timeline.insert(tk.END, f"[{ts}] {text}\n")
+
+        # Timestamp in subtle gray
+        self.txt_timeline.insert(tk.END, f"[{ts}] ", "time")
+
+        # Speaker Badge and Body
+        if tag_type == "signer":
+            self.txt_timeline.insert(tk.END, f"{speaker_badge} ", "signer")
+            self.txt_timeline.insert(tk.END, f"{text_content}\n\n", "signer_body")
+        elif tag_type == "staff":
+            self.txt_timeline.insert(tk.END, f"{speaker_badge} ", "staff")
+            self.txt_timeline.insert(tk.END, f"{text_content}\n\n", "staff_body")
+        elif tag_type == "system":
+            self.txt_timeline.insert(tk.END, f"{speaker_badge} ", "system")
+            self.txt_timeline.insert(tk.END, f"{text_content}\n\n", "system_body")
+        else:
+            self.txt_timeline.insert(tk.END, f"{speaker_badge} {text_content}\n\n")
+
         self.txt_timeline.see(tk.END)
         self.txt_timeline.config(state="disabled")
 

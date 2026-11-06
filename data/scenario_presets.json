@@ -1,0 +1,91 @@
+{
+  "Hospital & Clinic": {
+    "icon": "🏥",
+    "tag_color": "#00E5FF",
+    "description": "Medical Consultation & Patient Triage",
+    "staff_replies": [
+      "Wait for doctor",
+      "Take medication",
+      "Follow nurse",
+      "Room 101",
+      "Where does it hurt?",
+      "Please sit & rest"
+    ],
+    "recommended_signs": [
+      "hospital",
+      "doctor",
+      "medicine",
+      "pain",
+      "help",
+      "yes",
+      "no",
+      "thank_you"
+    ]
+  },
+  "General Services": {
+    "icon": "🏢",
+    "tag_color": "#FFD600",
+    "description": "Information & Customer Reception",
+    "staff_replies": [
+      "Please wait a moment",
+      "Follow me please",
+      "Take queue ticket",
+      "Proceed to Counter 3",
+      "Please sign here",
+      "Thank you"
+    ],
+    "recommended_signs": [
+      "hello",
+      "thank_you",
+      "sorry",
+      "yes",
+      "no",
+      "help",
+      "finish"
+    ]
+  },
+  "Police & Emergency": {
+    "icon": "🚨",
+    "tag_color": "#FF5252",
+    "description": "Crisis Reporting & Incident Triage",
+    "staff_replies": [
+      "Filing report now",
+      "Stay calm, you are safe",
+      "Officer is coming",
+      "Can you write details?",
+      "Emergency room",
+      "Need ambulance?"
+    ],
+    "recommended_signs": [
+      "help",
+      "emergency",
+      "police",
+      "danger",
+      "hospital",
+      "yes",
+      "no"
+    ]
+  },
+  "University & Classroom": {
+    "icon": "🎓",
+    "tag_color": "#40C4FF",
+    "description": "Academic & Lecture Room Support",
+    "staff_replies": [
+      "Class starts soon",
+      "Submit assignment",
+      "Room 304",
+      "Please see instructor",
+      "Library on 2nd floor",
+      "Exam in progress"
+    ],
+    "recommended_signs": [
+      "hello",
+      "thank_you",
+      "question",
+      "finish",
+      "book",
+      "yes",
+      "no"
+    ]
+  }
+}
