@@ -68,5 +68,8 @@ POSE_KEEP = {
     "l_thumb": 21, "r_thumb": 22,
 }
 
-# ---------- check_camera ----------
+# ---------- check_camera & Auto-Trigger Settings ----------
 STATS_WINDOW = 90          # คิด % การเจอมือจากกี่เฟรมล่าสุด (~3 วินาที)
+SHOULDER_WIDTH_GOOD = (0.28, 0.48)  # Rough distance hint (ratio 0..1)
+READY_LINE_RATIO = 0.74    # ระดับเส้นเริ่มอัตโนมัติ (เดิม 0.65 สูงเกินไป ปรับต่ำลงมาเป็น 0.74 ระดับชายโครง/เอวบน)
+READY_LINE_SHOULDER_MULT = 0.92  # ตัวคูณระยะจากไหล่ลงมา (เดิม 0.65 อยู่แถบอกบน ปรับเป็น 0.92 ลงมาระดับลิ้นปี่/ชายโครง)

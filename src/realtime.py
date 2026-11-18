@@ -105,9 +105,9 @@ def predict(model_type, model, seq_24x112, id_to_label):
 
 def get_ready_line_y(pose_lms, h):
     """
-    Computes y-coordinate (pixels) of the ready line (at lower chest / rib level).
+    Computes y-coordinate (pixels) of the ready line (at lower chest / rib / waist level).
     If pose landmarks are visible, calculate relative to shoulder position and width.
-    Otherwise default to 65% of screen height.
+    Otherwise default to 74% of screen height.
     """
     if pose_lms is not None:
         try:
@@ -115,12 +115,14 @@ def get_ready_line_y(pose_lms, h):
             r_sh = pose_lms[config.POSE_KEEP["r_shoulder"]]
             cy = (l_sh.y + r_sh.y) / 2.0
             sh_w = np.hypot(l_sh.x - r_sh.x, l_sh.y - r_sh.y)
-            chest_y = cy + 0.65 * max(sh_w, 0.15)
-            chest_y = np.clip(chest_y, 0.35, 0.85)
+            mult = getattr(config, "READY_LINE_SHOULDER_MULT", 0.92)
+            chest_y = cy + mult * max(sh_w, 0.15)
+            chest_y = np.clip(chest_y, 0.40, 0.90)
             return int(chest_y * h)
         except Exception:
             pass
-    return int(0.65 * h)
+    ratio = getattr(config, "READY_LINE_RATIO", 0.74)
+    return int(ratio * h)
 
 
 def is_hand_in_ready_zone(hands, ready_line_y, h):
@@ -225,9 +227,9 @@ def draw_ready_guide(img, ready_line_y, hand_inside, state):
     for x in range(0, w, segment_w * 2):
         cv2.line(img, (x, ready_line_y), (min(x + segment_w, w), ready_line_y), line_color, line_thickness)
 
-    guide_text = "READY LINE (Chest)" if not hand_inside else "HAND IN ZONE"
-    cv2.putText(img, guide_text, (w - 170, ready_line_y - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.42, line_color, 1, cv2.LINE_AA)
+    guide_text = "READY LINE (Lower Chest / Waist)" if not hand_inside else "HAND IN ZONE"
+    cv2.putText(img, guide_text, (w - 245, ready_line_y - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.40, line_color, 1, cv2.LINE_AA)
 
 
 def main():

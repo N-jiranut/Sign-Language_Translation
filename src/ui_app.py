@@ -258,12 +258,14 @@ class SignLanguageApp(tk.Tk):
         self.auto_speak = tk.BooleanVar(value=True)
         self.show_skeleton = tk.BooleanVar(value=True)
         self.trigger_mode = tk.StringVar(value="auto")  # 'auto' or 'manual'
+        self.line_ratio = tk.DoubleVar(value=getattr(config, "READY_LINE_RATIO", 0.74))
         self.selected_scenario = tk.StringVar(value=self.scenario_list[0] if self.scenario_list else "Hospital & Clinic")
         self.active_model_name = tk.StringVar(value="PyTorch GRU")
 
         # Thread-safe copies of control variables for camera worker
         self.trigger_mode_val = "auto"
         self.show_skeleton_val = True
+        self.line_ratio_val = getattr(config, "READY_LINE_RATIO", 0.74)
 
         # Track active notebook tab: 0 = Translation, 1 = Studio
         self.active_tab_idx = 0
@@ -309,6 +311,7 @@ class SignLanguageApp(tk.Tk):
         # Sync variable traces
         self.trigger_mode.trace_add("write", lambda *args: self._sync_trigger_mode())
         self.show_skeleton.trace_add("write", lambda *args: self._sync_skeleton())
+        self.line_ratio.trace_add("write", lambda *args: self._sync_line_ratio())
 
         # Load AI Model in background
         self.after(200, self._load_model_safe)
@@ -321,6 +324,12 @@ class SignLanguageApp(tk.Tk):
 
     def _sync_skeleton(self):
         self.show_skeleton_val = self.show_skeleton.get()
+
+    def _sync_line_ratio(self):
+        try:
+            self.line_ratio_val = float(self.line_ratio.get())
+        except Exception:
+            pass
 
     def _on_tab_changed(self, event=None):
         try:
@@ -517,18 +526,25 @@ class SignLanguageApp(tk.Tk):
                                   activebackground=self.C_CARD, font=("Segoe UI", 9))
         chk_skel.pack(side="right")
 
-        # Row 2: Detection Mode Selector
+        # Row 2: Detection Mode Selector & Ready Line Height
         row2 = tk.Frame(ctrl_frame, bg=self.C_CARD)
         row2.pack(fill="x", pady=(2, 0))
 
         tk.Label(row2, text="Trigger Mode:", font=("Segoe UI", 9, "bold"), fg=self.C_MUTED, bg=self.C_CARD).pack(side="left", padx=(0, 6))
         
-        tk.Radiobutton(row2, text="Auto (Chest Line)", variable=self.trigger_mode, value="auto",
+        tk.Radiobutton(row2, text="Auto Line", variable=self.trigger_mode, value="auto",
+                       bg=self.C_CARD, fg=self.C_TEXT, selectcolor=self.C_CARD_LIGHT, activebackground=self.C_CARD,
+                       font=("Segoe UI", 9)).pack(side="left", padx=(0, 6))
+        tk.Radiobutton(row2, text="Manual", variable=self.trigger_mode, value="manual",
                        bg=self.C_CARD, fg=self.C_TEXT, selectcolor=self.C_CARD_LIGHT, activebackground=self.C_CARD,
                        font=("Segoe UI", 9)).pack(side="left", padx=(0, 8))
-        tk.Radiobutton(row2, text="Manual (Spacebar)", variable=self.trigger_mode, value="manual",
-                       bg=self.C_CARD, fg=self.C_TEXT, selectcolor=self.C_CARD_LIGHT, activebackground=self.C_CARD,
-                       font=("Segoe UI", 9)).pack(side="left")
+
+        # Line Position Slider (Low <-> High)
+        lbl_line = tk.Label(row2, text="Line Height:", font=("Segoe UI", 8, "bold"), fg=self.C_MUTED, bg=self.C_CARD)
+        lbl_line.pack(side="left", padx=(4, 2))
+
+        self.scale_line = ttk.Scale(row2, from_=0.55, to=0.88, variable=self.line_ratio, orient="horizontal", length=90)
+        self.scale_line.pack(side="left", padx=(2, 4))
 
     # ----------------------------------------------------------------------
     # Right Tabbed Hub (Tab 1: Live Translation | Tab 2: Gesture Studio)
@@ -1111,14 +1127,19 @@ class SignLanguageApp(tk.Tk):
 
             # State Machine Calculations
             h, w = frame.shape[:2]
-            ready_y = int(0.65 * h)
+            line_ratio = self.line_ratio_val
+            ready_y = int(line_ratio * h)
             sh_w = 0.35
             if pose_lms is not None:
                 try:
                     l_sh = pose_lms[config.POSE_KEEP["l_shoulder"]]
                     r_sh = pose_lms[config.POSE_KEEP["r_shoulder"]]
                     sh_w = np.hypot(l_sh.x - r_sh.x, l_sh.y - r_sh.y)
-                    ready_y = int(np.clip(((l_sh.y + r_sh.y) / 2.0 + 0.65 * max(sh_w, 0.15)), 0.35, 0.85) * h)
+                    # Lowered ready line (down toward rib/waist level ~0.92 * sh_w)
+                    base_mult = getattr(config, "READY_LINE_SHOULDER_MULT", 0.92)
+                    multiplier = base_mult * (line_ratio / 0.74)
+                    chest_y = (l_sh.y + r_sh.y) / 2.0 + multiplier * max(sh_w, 0.15)
+                    ready_y = int(np.clip(chest_y, 0.40, 0.90) * h)
                 except Exception:
                     pass
 
@@ -1200,8 +1221,8 @@ class SignLanguageApp(tk.Tk):
             # Draw Ready Line Guide
             line_color = (0, 220, 255) if hand_in_zone else (100, 100, 100)
             cv2.line(view, (0, ready_y), (w, ready_y), line_color, 2 if hand_in_zone else 1)
-            cv2.putText(view, "READY ZONE (Chest)", (w - 180, ready_y - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, line_color, 1, cv2.LINE_AA)
+            cv2.putText(view, "READY LINE (Raise hand above line to start)", (w - 315, ready_y - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, line_color, 1, cv2.LINE_AA)
 
             # Border glow when recording
             if self.state == "recording":

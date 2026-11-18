@@ -3,9 +3,16 @@ Interactive Sign Language Data Collector / เก็บข้อมูลท่�
 Press SPACE to record a 1.8-second motion sequence.
 Saves extracted landmarks into data/raw/<word>/<person>_<timestamp>.npy
 
+Features:
+  - Real-time skeleton visualization
+  - Subtle Alignment Guides (Center Line, Chest Ready Line, Elbow Bounds) - Press [G] to toggle
+  - Multi-gesture tabs switching [1-9 / TAB]
+  - Undo / Delete last sample [D]
+  - Seamless continuation after check_camera.py
+
 Usage:
     python src/collect_data.py
-    python src/collect_data.py --words hello thanks yes no
+    python src/collect_data.py --words sawasdee khopkhun chai mai_chai
     python src/collect_data.py --person user1
 """
 import argparse
@@ -25,6 +32,8 @@ import config
 from features import extract_frame_features
 from landmarkers import Camera, Tracker, hands_by_side, draw_hand, draw_pose
 
+IDX = config.POSE_KEEP
+
 
 def get_sample_count(raw_dir, word, person=None):
     folder = raw_dir / word
@@ -33,6 +42,61 @@ def get_sample_count(raw_dir, word, person=None):
     if person:
         return len(list(folder.glob(f"{person}_*.npy")))
     return len(list(folder.glob("*.npy")))
+
+
+def draw_dashed_line(img, pt1, pt2, color, thickness=1, dash_len=8, gap_len=6):
+    """Draws a dashed line between pt1 and pt2."""
+    x1, y1 = pt1
+    x2, y2 = pt2
+    dist = np.hypot(x2 - x1, y2 - y1)
+    if dist < 1e-3:
+        return
+    dx = (x2 - x1) / dist
+    dy = (y2 - y1) / dist
+
+    curr_dist = 0.0
+    drawing = True
+    while curr_dist < dist:
+        seg_len = dash_len if drawing else gap_len
+        next_dist = min(curr_dist + seg_len, dist)
+        if drawing:
+            p_start = (int(x1 + dx * curr_dist), int(y1 + dy * curr_dist))
+            p_end = (int(x1 + dx * next_dist), int(y1 + dy * next_dist))
+            cv2.line(img, p_start, p_end, color, thickness, cv2.LINE_AA)
+        curr_dist = next_dist
+        drawing = not drawing
+
+
+def draw_subtle_guides(img, pose_lms):
+    """Draws subtle alignment lines to help user maintain center and chest height."""
+    h, w = img.shape[:2]
+    # Subtle Center Line
+    center_x = w // 2
+    draw_dashed_line(img, (center_x, 100), (center_x, h - 35), (80, 80, 80), 1, 6, 8)
+
+    # Subtle Ready Line (Lower Chest / Waist)
+    ready_y = int(getattr(config, "READY_LINE_RATIO", 0.74) * h)
+    if pose_lms is not None:
+        try:
+            l_sh = pose_lms[IDX["l_shoulder"]]
+            r_sh = pose_lms[IDX["r_shoulder"]]
+            cy = (l_sh.y + r_sh.y) / 2.0
+            sh_w = np.hypot(l_sh.x - r_sh.x, l_sh.y - r_sh.y)
+            mult = getattr(config, "READY_LINE_SHOULDER_MULT", 0.92)
+            chest_y = cy + mult * max(sh_w, 0.15)
+            ready_y = int(np.clip(chest_y, 0.40, 0.90) * h)
+        except Exception:
+            pass
+
+    draw_dashed_line(img, (20, ready_y), (w - 20, ready_y), (60, 120, 150), 1, 8, 8)
+    cv2.putText(img, "Ready Line (Waist/Chest)", (w - 180, ready_y - 6),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (120, 160, 180), 1, cv2.LINE_AA)
+
+    # Subtle Left/Right Elbow Margins (5% from edge)
+    margin_l = int(0.05 * w)
+    margin_r = int(0.95 * w)
+    draw_dashed_line(img, (margin_l, int(0.40 * h)), (margin_l, int(0.75 * h)), (60, 60, 60), 1, 4, 6)
+    draw_dashed_line(img, (margin_r, int(0.40 * h)), (margin_r, int(0.75 * h)), (60, 60, 60), 1, 4, 6)
 
 
 def draw_hud(img, words_list, active_idx, person, state_text, state_color, counts_map, extra_info=""):
@@ -70,8 +134,8 @@ def draw_hud(img, words_list, active_idx, person, state_text, state_color, count
     # Bottom helper bar
     bottom_h = 28
     cv2.rectangle(img, (0, h - bottom_h), (w, h), (15, 15, 15), -1)
-    help_text = "[SPACE] Record  |  [1-9 / TAB] Switch Gesture  |  [D] Delete Last  |  [Q] Quit"
-    cv2.putText(img, help_text, (15, h - 9), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+    help_text = "[SPACE] Record  |  [1-9 / TAB] Switch  |  [G] Guides  |  [D] Delete Last  |  [Q] Quit"
+    cv2.putText(img, help_text, (15, h - 9), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (200, 200, 200), 1, cv2.LINE_AA)
 
 
 def main():
@@ -93,7 +157,7 @@ def main():
 
     cam = Camera()
     print(f"[Ready] Camera active at {cam.actual_size()}. Collecting gestures: {words_list}")
-    print("[Controls] SPACE = Start Countdown (3s) & Record | 1..9 = Switch Gesture | D = Delete Last | Q = Quit")
+    print("[Controls] SPACE = Start Countdown (3s) & Record | 1..9 = Switch Gesture | G = Toggle Guides | D = Delete Last | Q = Quit")
 
     state = "idle"
     countdown_start = 0.0
@@ -101,6 +165,7 @@ def main():
     current_frames = []
     last_saved_file = None
     last_id = 0
+    show_guides = True
 
     # Cache sample counts to avoid ~210 disk IO calls per second
     counts_map = {w: get_sample_count(config.DATA_RAW_DIR, w, person) for w in words_list}
@@ -126,6 +191,10 @@ def main():
             for side, lms in hands.items():
                 if lms is not None:
                     draw_hand(view, lms, side)
+
+            # Draw subtle alignment guides
+            if show_guides:
+                draw_subtle_guides(view, pose_lms)
 
             now = time.time()
             active_word = words_list[active_idx]
@@ -195,6 +264,8 @@ def main():
                 if state == "idle":
                     state = "countdown"
                     countdown_start = time.time()
+            elif key in (ord("g"), ord("G")):
+                show_guides = not show_guides
             elif ord("1") <= key <= ord("9"):
                 target_i = key - ord("1")
                 if target_i < len(words_list):
@@ -212,7 +283,17 @@ def main():
 
     cam.release()
     cv2.destroyAllWindows()
-    print("[Exited] Data collector closed.")
+    print("\n" + "=" * 65)
+    print(" [Finished] Data collection session ended.")
+    print(" Total samples collected per gesture:")
+    for w in words_list:
+        print(f"  - {w}: {counts_map.get(w, 0)} samples")
+    print("\n --- Next Steps / ขั้นตอนถัดไป ---")
+    print(" 1. Train models with the new samples:")
+    print("    python main.py --train")
+    print(" 2. Test live recognition:")
+    print("    python main.py (Desktop App)  or  python main.py --realtime")
+    print("=" * 65 + "\n")
 
 
 if __name__ == "__main__":

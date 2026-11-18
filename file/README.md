@@ -45,7 +45,7 @@
 | Recognition type / ประเภทการแปล | Isolated signs (one word or short phrase at a time) / คำเดี่ยวหรือวลีสั้น ทีละคำ |
 | Vocabulary / จำนวนคำ | `TODO` words (target 10–15) / `TODO` คำ (เป้าหมาย 10–15 คำ) |
 | Use case / สถานการณ์ใช้งาน | `TODO: e.g. service counter` / `TODO: เช่น เคาน์เตอร์บริการ` |
-| User position / ตำแหน่งผู้ใช้ | Seated, 70–90 cm from camera, head to waist visible / นั่ง ห่างกล้อง 70–90 ซม. เห็นหัวถึงเอว |
+| User position / ตำแหน่งผู้ใช้ | Seated, feet 90 cm from camera, camera height 161 cm, head to upper abdomen visible / นั่ง ปลายเท้าห่างกล้อง 90 ซม. ฐานกล้องสูง 161 ซม. เห็นหัวถึงลิ้นปี่/สะดือ |
 | Output / ผลลัพธ์ | Text on screen + speech / ข้อความบนจอ + เสียงพูด |
 
 **Vocabulary / รายการคำ**
