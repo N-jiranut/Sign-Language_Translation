@@ -1,31 +1,8 @@
 {
-  "Hospital & Clinic": {
-    "icon": "🏥",
-    "tag_color": "#00E5FF",
-    "description": "Medical Consultation & Patient Triage",
-    "staff_replies": [
-      "Wait for doctor",
-      "Take medication",
-      "Follow nurse",
-      "Room 101",
-      "Where does it hurt?",
-      "Please sit & rest"
-    ],
-    "recommended_signs": [
-      "hospital",
-      "doctor",
-      "medicine",
-      "pain",
-      "help",
-      "yes",
-      "no",
-      "thank_you"
-    ]
-  },
   "General Services": {
     "icon": "🏢",
     "tag_color": "#FFD600",
-    "description": "Information & Customer Reception",
+    "description": "General Counter & Everyday Communication (All Trained Signs)",
     "staff_replies": [
       "Please wait a moment",
       "Follow me please",
@@ -34,14 +11,67 @@
       "Please sign here",
       "Thank you"
     ],
+    "active_gestures": [
+      "Done",
+      "Dont_like",
+      "How",
+      "Me",
+      "No",
+      "Thank",
+      "Tomorrow",
+      "Worry",
+      "Yesterday",
+      "You"
+    ],
     "recommended_signs": [
-      "hello",
-      "thank_you",
-      "sorry",
-      "yes",
-      "no",
-      "help",
-      "finish"
+      "Done",
+      "Dont_like",
+      "How",
+      "Me",
+      "No",
+      "Thank",
+      "Tomorrow",
+      "Worry",
+      "Yesterday",
+      "You"
+    ]
+  },
+  "Hospital & Clinic": {
+    "icon": "🏥",
+    "tag_color": "#00E5FF",
+    "description": "Medical Consultation, ER & Patient Triage",
+    "staff_replies": [
+      "Wait for doctor",
+      "Take medication",
+      "Follow nurse",
+      "Emergency room",
+      "Where does it hurt?",
+      "Please sit & rest"
+    ],
+    "active_gestures": [
+      "Me",
+      "You",
+      "No",
+      "Thank",
+      "Worry",
+      "Dont_like",
+      "How",
+      "Yesterday",
+      "Tomorrow",
+      "Emergency",
+      "Doctor",
+      "Pain",
+      "Medicine"
+    ],
+    "recommended_signs": [
+      "Emergency",
+      "Doctor",
+      "Pain",
+      "Medicine",
+      "Worry",
+      "Me",
+      "No",
+      "Thank"
     ]
   },
   "Police & Emergency": {
@@ -56,14 +86,29 @@
       "Emergency room",
       "Need ambulance?"
     ],
+    "active_gestures": [
+      "Me",
+      "You",
+      "No",
+      "Worry",
+      "How",
+      "Yesterday",
+      "Done",
+      "Thank",
+      "Emergency",
+      "Help",
+      "Police",
+      "Danger"
+    ],
     "recommended_signs": [
-      "help",
-      "emergency",
-      "police",
-      "danger",
-      "hospital",
-      "yes",
-      "no"
+      "Emergency",
+      "Help",
+      "Police",
+      "Danger",
+      "Worry",
+      "Me",
+      "No",
+      "Yesterday"
     ]
   },
   "University & Classroom": {
@@ -78,14 +123,27 @@
       "Library on 2nd floor",
       "Exam in progress"
     ],
+    "active_gestures": [
+      "Done",
+      "How",
+      "Me",
+      "No",
+      "Thank",
+      "Tomorrow",
+      "Yesterday",
+      "You",
+      "Question",
+      "Book"
+    ],
     "recommended_signs": [
-      "hello",
-      "thank_you",
-      "question",
-      "finish",
-      "book",
-      "yes",
-      "no"
+      "Done",
+      "How",
+      "Tomorrow",
+      "Yesterday",
+      "Question",
+      "Book",
+      "Thank",
+      "No"
     ]
   }
 }

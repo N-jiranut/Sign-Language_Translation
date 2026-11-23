@@ -1,0 +1,82 @@
+{
+  "motion_median": 0.11745310015976429,
+  "class_motion": {
+    "Done": 0.19408765714615583,
+    "How": 0.11278859153389931,
+    "Me": 0.06780418986454606,
+    "No": 0.07409285008907318,
+    "Thank": 0.12211760878562927,
+    "Tomorrow": 0.20615975745022297,
+    "Yesterday": 0.1439579976722598,
+    "You": 0.06718532182276249
+  },
+  "per_class_weights": {
+    "Done": {
+      "rf_kinematic": 0.2679096087952612,
+      "gru": 0.36599356275605993,
+      "cnn1d": 0.3660968284486789
+    },
+    "How": {
+      "rf_kinematic": 0.3443654034363992,
+      "gru": 0.31492001098875977,
+      "cnn1d": 0.340714585574841
+    },
+    "Me": {
+      "rf_kinematic": 0.34873926400458105,
+      "gru": 0.3127249111210948,
+      "cnn1d": 0.3385358248743241
+    },
+    "No": {
+      "rf_kinematic": 0.34200214861148365,
+      "gru": 0.31601467512167924,
+      "cnn1d": 0.34198317626683705
+    },
+    "Thank": {
+      "rf_kinematic": 0.28931496611700436,
+      "gru": 0.35529585563218974,
+      "cnn1d": 0.3553891782508059
+    },
+    "Tomorrow": {
+      "rf_kinematic": 0.2869949573462556,
+      "gru": 0.35643007127720705,
+      "cnn1d": 0.3565749713765373
+    },
+    "Yesterday": {
+      "rf_kinematic": 0.2855955158868724,
+      "gru": 0.35710676363214533,
+      "cnn1d": 0.35729772048098235
+    },
+    "You": {
+      "rf_kinematic": 0.3074225868700367,
+      "gru": 0.3326344322077415,
+      "cnn1d": 0.35994298092222166
+    }
+  },
+  "per_class_specialist": {
+    "Done": "cnn1d",
+    "How": "rf_kinematic",
+    "Me": "rf_kinematic",
+    "No": "rf_kinematic",
+    "Thank": "cnn1d",
+    "Tomorrow": "cnn1d",
+    "Yesterday": "cnn1d",
+    "You": "cnn1d"
+  },
+  "scenario": "University & Classroom",
+  "metrics": {
+    "clean": {
+      "rf_legacy": 1.0,
+      "rf_kinematic": 1.0,
+      "gru": 1.0,
+      "cnn1d": 1.0,
+      "hybrid": 1.0
+    },
+    "robust": {
+      "rf_legacy": 0.9791666666666666,
+      "rf_kinematic": 1.0,
+      "gru": 1.0,
+      "cnn1d": 1.0,
+      "hybrid": 1.0
+    }
+  }
+}

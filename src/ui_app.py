@@ -9,6 +9,7 @@ Key Components:
   - Thread-Safe Model Switching & Asynchronous PyTorch GRU / Random Forest Classifier
   - Two-Way Real-Time Communication with customizable scenario presets
 """
+from collections import deque
 import json
 import os
 import re
@@ -18,31 +19,11 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
-
-# Safe AI Model Imports
-try:
-    import joblib
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.metrics import accuracy_score
-except ImportError:
-    joblib = None
-    RandomForestClassifier = None
-    accuracy_score = None
-
-try:
-    import torch
-    import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
-except ImportError:
-    torch = None
-    nn = None
-    DataLoader = None
-    TensorDataset = None
 
 # Local module imports
 _DIR = Path(__file__).resolve().parent
@@ -51,10 +32,11 @@ for _p in (str(_DIR), str(_DIR.parent)):
         sys.path.insert(0, _p)
 
 import config
-from dataset import augment_dataset, load_label_mapping, load_raw_dataset, save_label_mapping, split_dataset
-from features import extract_frame_features, resample_sequence
+from dataset import load_label_mapping
+from features import extract_frame_features
 from landmarkers import Camera, Tracker, draw_hand, draw_pose, hands_by_side
-from models import SignGRU
+from models import HybridEnsemblePredictor
+from train_all import train_all_models, train_scenario_profile
 
 # --------------------------------------------------------------------------
 # Font Scaling Presets for High Legibility & Accessibility
@@ -114,88 +96,89 @@ FONT_LEVELS = [
     },
 ]
 
+ENGINE_OPTIONS = [
+    ("Hybrid (Auto-Specialist)", "hybrid"),
+    ("PyTorch GRU", "gru"),
+    ("PyTorch 1D-CNN", "cnn1d"),
+    ("RF (Kinematic)", "rf_kinematic"),
+    ("RF (Legacy Flat)", "rf_legacy"),
+]
+ENGINE_NAME_TO_KEY = dict(ENGINE_OPTIONS)
+ENGINE_KEY_TO_NAME = {k: name for name, k in ENGINE_OPTIONS}
+ENGINE_SHORT_NAMES = {
+    "hybrid": "Hybrid",
+    "gru": "GRU",
+    "cnn1d": "1D-CNN",
+    "rf_kinematic": "RF-Kin",
+    "rf_legacy": "RF-Leg",
+}
+
 # --------------------------------------------------------------------------
 # Scenario Presets Loader (reads data/scenario_presets.json)
 # --------------------------------------------------------------------------
 def load_scenario_data():
     """Loads scenario presets from data/scenario_presets.json with resilient fallback."""
     cfg_file = getattr(config, "PRESETS_CONFIG_PATH", config.DATA_DIR / "scenario_presets.json")
+    data = None
     if cfg_file.exists():
         try:
             with open(cfg_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            staff_map = {}
-            gesture_map = {}
-            hints_map = {}
-            for k, v in data.items():
-                staff_map[k] = v.get("staff_replies", [])
-                gesture_map[k] = v.get("recommended_signs", [])
-                hints_map[k] = (
-                    v.get("category", "General"),
-                    v.get("accent_color", "#00E5FF"),
-                    v.get("hint_text", "")
-                )
-            return staff_map, gesture_map, hints_map, list(data.keys())
         except Exception as e:
             print(f"[Warning] Failed to parse {cfg_file}: {e}")
 
-    # Built-in Default Scenarios
-    data = {
-        "Hospital & Clinic": {
-            "category": "Healthcare",
-            "accent_color": "#00E5FF",
-            "hint_text": "Context Signs: hospital, doctor, medicine, pain, help, yes, no, thank_you",
-            "staff_replies": [
-                "Wait for doctor",
-                "Take medication",
-                "Follow nurse",
-                "Please sit here",
-                "Where does it hurt?",
-                "Are you feeling better?"
-            ],
-            "recommended_signs": ["hospital", "doctor", "medicine", "pain", "help", "yes", "no", "thank_you"]
-        },
-        "General Services": {
-            "category": "Customer Service",
-            "accent_color": "#00E676",
-            "hint_text": "Context Signs: hello, thank_you, sorry, please, yes, no",
-            "staff_replies": [
-                "How can I help you?",
-                "Please wait a moment",
-                "Have a great day",
-                "Thank you very much"
-            ],
-            "recommended_signs": ["hello", "thank_you", "sorry", "yes", "no"]
-        },
-        "Police & Emergency": {
-            "category": "Public Safety",
-            "accent_color": "#FF1744",
-            "hint_text": "Context Signs: emergency, help, accident, police, danger, safe",
-            "staff_replies": [
-                "You are safe here",
-                "Officer is on the way",
-                "Do you need ambulance?",
-                "Please stay calm"
-            ],
-            "recommended_signs": ["emergency", "help", "accident", "danger", "safe", "yes", "no"]
-        },
-        "University & Classroom": {
-            "category": "Education",
-            "accent_color": "#FFD600",
-            "hint_text": "Context Signs: hello, thank_you, question, finish, book, yes, no",
-            "staff_replies": [
-                "Class starts soon",
-                "Submit assignment",
-                "Room 304",
-                "Please see instructor"
-            ],
-            "recommended_signs": ["hello", "thank_you", "question", "finish", "book", "yes", "no"]
+    if not data:
+        data = {
+            "General Services": {
+                "icon": "🏢",
+                "tag_color": "#FFD600",
+                "description": "General Counter & Everyday Communication",
+                "staff_replies": [
+                    "Please wait a moment",
+                    "Follow me please",
+                    "Take queue ticket",
+                    "Thank you"
+                ],
+                "active_gestures": ["Done", "Dont_like", "How", "Me", "No", "Thank", "Tomorrow", "Worry", "Yesterday", "You"],
+                "recommended_signs": ["Done", "Dont_like", "How", "Me", "No", "Thank", "Tomorrow", "Worry", "Yesterday", "You"]
+            },
+            "Hospital & Clinic": {
+                "icon": "🏥",
+                "tag_color": "#00E5FF",
+                "description": "Medical Consultation, ER & Patient Triage",
+                "staff_replies": [
+                    "Wait for doctor",
+                    "Take medication",
+                    "Follow nurse",
+                    "Emergency room",
+                    "Where does it hurt?",
+                    "Please sit & rest"
+                ],
+                "active_gestures": ["Me", "You", "No", "Thank", "Worry", "Dont_like", "How", "Emergency", "Doctor", "Pain"],
+                "recommended_signs": ["Emergency", "Doctor", "Pain", "Worry", "Me", "No", "Thank"]
+            },
         }
-    }
-    staff_map = {k: v["staff_replies"] for k, v in data.items()}
-    gesture_map = {k: v["recommended_signs"] for k, v in data.items()}
-    hints_map = {k: (v["category"], v["accent_color"], v["hint_text"]) for k, v in data.items()}
-    return staff_map, gesture_map, hints_map, list(data.keys())
+
+    staff_map = {}
+    gesture_map = {}
+    active_map = {}
+    hints_map = {}
+    for k, v in data.items():
+        staff_map[k] = list(v.get("staff_replies", []))
+        active_list = list(v.get("active_gestures", v.get("recommended_signs", [])))
+        rec_list = list(v.get("recommended_signs", active_list))
+        active_map[k] = active_list
+        gesture_map[k] = rec_list
+
+        desc = v.get("description") or v.get("category") or "General"
+        color = v.get("tag_color") or v.get("accent_color") or "#00E5FF"
+        hint_text = v.get("hint_text")
+        if not hint_text:
+            preview = ", ".join(active_list[:8]) + ("..." if len(active_list) > 8 else "")
+            hint_text = f"{desc}  |  Database ({len(active_list)}): {preview}" if active_list else desc
+        hints_map[k] = (desc, color, hint_text)
+
+    return staff_map, gesture_map, active_map, hints_map, list(data.keys())
 
 
 # --------------------------------------------------------------------------
@@ -250,9 +233,15 @@ class SignLanguageApp(tk.Tk):
         self._setup_styles()
 
         # Model & State Variables
-        self.scenario_staff_replies, self.scenario_gesture_presets, self.scenario_hints, self.scenario_list = load_scenario_data()
-        self.model_type = "gru"  # 'gru' or 'rf'
-        self.classifier = None
+        (
+            self.scenario_staff_replies,
+            self.scenario_gesture_presets,
+            self.scenario_active_gestures,
+            self.scenario_hints,
+            self.scenario_list,
+        ) = load_scenario_data()
+        self.model_type = "hybrid"
+        self.predictor = None
         self.id_to_label = {}
         self.threshold = 0.60    # Unified recognition threshold
         self.auto_speak = tk.BooleanVar(value=True)
@@ -260,7 +249,7 @@ class SignLanguageApp(tk.Tk):
         self.trigger_mode = tk.StringVar(value="auto")  # 'auto' or 'manual'
         self.line_ratio = tk.DoubleVar(value=getattr(config, "READY_LINE_RATIO", 0.74))
         self.selected_scenario = tk.StringVar(value=self.scenario_list[0] if self.scenario_list else "Hospital & Clinic")
-        self.active_model_name = tk.StringVar(value="PyTorch GRU")
+        self.active_model_name = tk.StringVar(value="Hybrid (Auto-Specialist)")
 
         # Thread-safe copies of control variables for camera worker
         self.trigger_mode_val = "auto"
@@ -287,7 +276,16 @@ class SignLanguageApp(tk.Tk):
         self.state = "idle"  # 'idle', 'countdown', 'recording', 'result'
         self.arm_start_time = None
         self.rec_start_time = None
+        self.result_start_time = 0.0
+        self.still_start_time = None
+        self.rec_peak_speed = 0.0
+        self.hand_dropped_frames = 0
+        self.retrigger_move_frames = 0
+        self.prev_wrist_xy = None
+        self.wrist_speed = 0.0
+        self.pre_roll_buffer = deque(maxlen=config.PRE_ROLL_FRAMES)
         self.current_recording = []
+        self.phrase_words = []
         self.last_sign = "-"
         self.last_conf = 0.0
         self.fps = 0.0
@@ -384,14 +382,14 @@ class SignLanguageApp(tk.Tk):
 
         # Brand Title
         brand_frame = tk.Frame(header_frame, bg="#181818")
-        brand_frame.pack(side="left", padx=16, pady=10)
+        brand_frame.pack(side="left", padx=(12, 8), pady=10)
 
         tk.Label(brand_frame, text="🤟 TSL ASSIST", font=("Segoe UI", 14, "bold"), fg=self.C_ACCENT_CYAN, bg="#181818").pack(side="left")
-        tk.Label(brand_frame, text=" | Sign Language Translation Hub", font=("Segoe UI", 10), fg=self.C_MUTED, bg="#181818").pack(side="left", padx=(4, 0))
+        tk.Label(brand_frame, text=" | TSL Hub", font=("Segoe UI", 10), fg=self.C_MUTED, bg="#181818").pack(side="left", padx=(4, 0))
 
         # Scenario Context Switcher
         scenario_frame = tk.Frame(header_frame, bg="#181818")
-        scenario_frame.pack(side="left", padx=24, pady=10)
+        scenario_frame.pack(side="left", padx=8, pady=10)
 
         tk.Label(scenario_frame, text="Scenario:", font=("Segoe UI", 9, "bold"), fg=self.C_MUTED, bg="#181818").pack(side="left", padx=(0, 6))
 
@@ -400,7 +398,7 @@ class SignLanguageApp(tk.Tk):
             textvariable=self.selected_scenario,
             values=self.scenario_list,
             state="readonly",
-            width=22,
+            width=19,
             font=("Segoe UI", 9, "bold")
         )
         self.combo_scenario.pack(side="left")
@@ -421,19 +419,19 @@ class SignLanguageApp(tk.Tk):
             cursor="hand2",
             command=self.open_presets_settings
         )
-        btn_presets.pack(side="left", padx=(8, 0))
+        btn_presets.pack(side="left", padx=(6, 0))
 
-        # AI Engine Switcher (GRU vs RF)
+        # AI Engine Switcher (Hybrid + Individual Models)
         engine_frame = tk.Frame(header_frame, bg="#181818")
-        engine_frame.pack(side="left", padx=14, pady=10)
+        engine_frame.pack(side="left", padx=8, pady=10)
 
         tk.Label(engine_frame, text="Engine:", font=("Segoe UI", 9, "bold"), fg=self.C_MUTED, bg="#181818").pack(side="left", padx=(0, 6))
         self.combo_model = ttk.Combobox(
             engine_frame,
             textvariable=self.active_model_name,
-            values=["PyTorch GRU", "Random Forest"],
+            values=[name for name, _ in ENGINE_OPTIONS],
             state="readonly",
-            width=14,
+            width=22,
             font=("Segoe UI", 9)
         )
         self.combo_model.pack(side="left")
@@ -441,13 +439,13 @@ class SignLanguageApp(tk.Tk):
 
         # Status Indicators (Right side of header)
         status_frame = tk.Frame(header_frame, bg="#181818")
-        status_frame.pack(side="right", padx=16, pady=10)
+        status_frame.pack(side="right", padx=(6, 12), pady=10)
 
         self.lbl_camera_status = tk.Label(status_frame, text="● Camera: Ready", font=("Segoe UI", 9, "bold"), fg=self.C_MUTED, bg="#181818")
-        self.lbl_camera_status.pack(side="left", padx=10)
+        self.lbl_camera_status.pack(side="left", padx=6)
 
-        self.lbl_model_status = tk.Label(status_frame, text="● Model: Loading...", font=("Segoe UI", 9, "bold"), fg=self.C_ACCENT_YELLOW, bg="#181818")
-        self.lbl_model_status.pack(side="left", padx=10)
+        self.lbl_model_status = tk.Label(status_frame, text="● Loading...", font=("Segoe UI", 9, "bold"), fg=self.C_ACCENT_YELLOW, bg="#181818")
+        self.lbl_model_status.pack(side="left", padx=6)
 
     # ----------------------------------------------------------------------
     # 2. Main Dual-Pane Content (Viewfinder Left / Hub Right)
@@ -586,8 +584,18 @@ class SignLanguageApp(tk.Tk):
 
         # Large English Word Display
         self.lbl_hero_word = tk.Label(hero_frame, text="Awaiting Sign...", font=("Segoe UI", 24, "bold"),
-                                      fg=self.C_TEXT, bg="#15212E", pady=4)
+                                      fg=self.C_TEXT, bg="#15212E", pady=2)
         self.lbl_hero_word.pack()
+
+        # Specialist / Active Engine Attribution Badge
+        self.lbl_hero_engine = tk.Label(
+            hero_frame,
+            text="Engine: Hybrid (Auto-Specialist)",
+            font=("Segoe UI", 8, "bold"),
+            fg="#80D8FF",
+            bg="#15212E",
+        )
+        self.lbl_hero_engine.pack(pady=(0, 2))
 
         # Context Guidance / Hint
         init_hint = self.scenario_hints.get(self.selected_scenario.get(), ("", "", ""))[2]
@@ -602,11 +610,11 @@ class SignLanguageApp(tk.Tk):
 
         # Confidence Bar (Canvas)
         self.canvas_conf_bar = tk.Canvas(hero_frame, height=5, bg="#0D161F", highlightthickness=0)
-        self.canvas_conf_bar.pack(fill="x", padx=14, pady=(0, 8))
+        self.canvas_conf_bar.pack(fill="x", padx=14, pady=(0, 6))
 
         # Hero Action Bar (Speak button, Auto-TTS toggle)
         h_actions = tk.Frame(hero_frame, bg="#15212E")
-        h_actions.pack(fill="x", padx=12, pady=(0, 8))
+        h_actions.pack(fill="x", padx=12, pady=(0, 6))
 
         self.btn_speak = tk.Button(h_actions, text="🔊 Speak (Audio)", font=("Segoe UI", 9, "bold"),
                                    bg=self.C_ACCENT_CYAN, fg="#121212", activebackground="#00B0FF",
@@ -617,6 +625,33 @@ class SignLanguageApp(tk.Tk):
                                  bg="#15212E", fg=self.C_TEXT, selectcolor="#0D161F",
                                  activebackground="#15212E", font=("Segoe UI", 9))
         chk_tts.pack(side="left", padx=10)
+
+        # Continuous Phrase Bar (accumulates fast sequential signs)
+        phrase_frame = tk.Frame(parent, bg="#16222E", highlightbackground="#27394D", highlightthickness=1)
+        phrase_frame.pack(side="top", fill="x", padx=12, pady=(2, 4))
+
+        tk.Label(phrase_frame, text="🔗 Phrase:", font=("Segoe UI", 9, "bold"),
+                 fg=self.C_ACCENT_CYAN, bg="#16222E").pack(side="left", padx=(8, 4), pady=4)
+        self.lbl_phrase_text = tk.Label(
+            phrase_frame,
+            text="(Sign continuously to build a phrase...)",
+            font=("Segoe UI", 11, "bold"),
+            fg=self.C_MUTED,
+            bg="#16222E",
+            anchor="w",
+        )
+        self.lbl_phrase_text.pack(side="left", fill="x", expand=True, padx=4)
+
+        tk.Button(
+            phrase_frame, text="✖", font=("Segoe UI", 8, "bold"),
+            bg="#22303D", fg="#FF8A80", relief="flat", padx=6, pady=2,
+            cursor="hand2", command=self.clear_phrase
+        ).pack(side="right", padx=(2, 6), pady=3)
+        tk.Button(
+            phrase_frame, text="🔊 Speak", font=("Segoe UI", 8, "bold"),
+            bg="#1D3549", fg="#00E5FF", relief="flat", padx=8, pady=2,
+            cursor="hand2", command=self.speak_phrase
+        ).pack(side="right", padx=2, pady=3)
 
         # 2. TWO-WAY STAFF RESPONSE (Packed at BOTTOM so it is ALWAYS visible)
         self.two_way_frame = tk.LabelFrame(
@@ -806,7 +841,7 @@ class SignLanguageApp(tk.Tk):
                                           command=self.retrain_models_async)
         self.btn_train_models.pack(side="left")
 
-        self.lbl_train_status = tk.Label(row_train, text="Click to train Random Forest & GRU on all current samples",
+        self.lbl_train_status = tk.Label(row_train, text="Click to train RF (Legacy & Kinematic), GRU, 1D-CNN & Hybrid Ensemble",
                                          font=("Segoe UI", 9), fg=self.C_MUTED, bg=self.C_CARD)
         self.lbl_train_status.pack(side="left", padx=14)
 
@@ -859,6 +894,8 @@ class SignLanguageApp(tk.Tk):
             self.two_way_frame.config(font=("Segoe UI", cfg["header_sub"], "bold"))
         if hasattr(self, "lbl_tw_hint"):
             self.lbl_tw_hint.config(font=("Segoe UI", cfg["header_sub"]))
+        if hasattr(self, "lbl_phrase_text"):
+            self.lbl_phrase_text.config(font=("Segoe UI", min(cfg["log_body"], 14), "bold"))
         if hasattr(self, "entry_reply"):
             self.entry_reply.config(font=("Segoe UI", cfg["entry"]))
         if hasattr(self, "btn_send_reply"):
@@ -872,33 +909,312 @@ class SignLanguageApp(tk.Tk):
     # ----------------------------------------------------------------------
     def _on_scenario_switch(self, event=None):
         self.reload_scenario_presets()
+        self._load_model_safe()
+        if hasattr(self, "txt_dataset_info"):
+            self._refresh_dataset_summary()
         scenario = self.selected_scenario.get()
-        self._append_to_timeline("⚙️ [System]", f"Switched context to [{scenario}]. Quick replies & recommended signs updated.", "system")
+        n_gestures = len(self.id_to_label)
+        ded = "dedicated" if (self.predictor is not None and getattr(self.predictor, "is_scenario_dedicated", False)) else "shared global"
+        self._append_to_timeline(
+            "⚙️ [System]",
+            f"Switched context to [{scenario}] — Loaded {ded} AI model ({n_gestures} gestures).",
+            "system",
+        )
 
     def reload_scenario_presets(self):
         """Reloads scenario presets dynamically from data/scenario_presets.json."""
-        self.scenario_staff_replies, self.scenario_gesture_presets, self.scenario_hints, self.scenario_list = load_scenario_data()
+        (
+            self.scenario_staff_replies,
+            self.scenario_gesture_presets,
+            self.scenario_active_gestures,
+            self.scenario_hints,
+            self.scenario_list,
+        ) = load_scenario_data()
         if hasattr(self, "combo_scenario"):
             self.combo_scenario.config(values=self.scenario_list)
+            if self.selected_scenario.get() not in self.scenario_list and self.scenario_list:
+                self.selected_scenario.set(self.scenario_list[0])
         self._render_scenario_buttons()
 
     def open_presets_settings(self):
-        """Opens data/scenario_presets.json in default editor so user can customize words."""
-        file_path = getattr(config, "PRESETS_CONFIG_PATH", config.DATA_DIR / "scenario_presets.json")
-        if file_path.exists():
+        """Opens interactive Scenario & Gesture Database Manager dialog."""
+        cfg_file = getattr(config, "PRESETS_CONFIG_PATH", config.DATA_DIR / "scenario_presets.json")
+        if cfg_file.exists():
             try:
-                os.startfile(str(file_path))
-            except Exception:
-                subprocess.run(["notepad.exe", str(file_path)])
-            messagebox.showinfo(
-                "Customize Scenario Presets",
-                f"Opened preset configuration file:\n\n{file_path}\n\n"
-                "• You can edit or add custom staff quick replies ('staff_replies')\n"
-                "• You can edit or add recommended gesture words ('recommended_signs')\n"
-                "• Save the file in Notepad / VS Code, then re-select the Scenario in the app to apply changes instantly!"
-            )
+                with open(cfg_file, "r", encoding="utf-8") as f:
+                    presets_data = json.load(f)
+            except Exception as e:
+                messagebox.showerror("Preset Error", f"Failed to read {cfg_file}:\n{e}")
+                return
         else:
-            messagebox.showwarning("File Not Found", f"Cannot find: {file_path}")
+            presets_data = {}
+
+        # Gather all recorded gestures from shared data/raw/ bank
+        raw_counts = {}
+        if config.DATA_RAW_DIR.exists():
+            for d in sorted(config.DATA_RAW_DIR.iterdir()):
+                if d.is_dir():
+                    raw_counts[d.name] = len(list(d.glob("*.npy")))
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Scenario & Gesture Database Manager")
+        dlg.geometry("780x560")
+        dlg.minsize(700, 500)
+        dlg.configure(bg=self.C_BG)
+        dlg.transient(self)
+        dlg.grab_set()
+
+        # Left Pane: Scenario list + Add/Delete Location
+        left_p = tk.Frame(dlg, bg=self.C_CARD, width=215, highlightbackground=self.C_BORDER, highlightthickness=1)
+        left_p.pack(side="left", fill="y", padx=(12, 6), pady=12)
+        left_p.pack_propagate(False)
+
+        tk.Label(left_p, text="Locations / Scenarios", font=("Segoe UI", 10, "bold"),
+                 fg=self.C_ACCENT_CYAN, bg=self.C_CARD).pack(anchor="w", padx=10, pady=(10, 6))
+
+        lb_scenarios = tk.Listbox(
+            left_p, bg="#141B24", fg=self.C_TEXT, selectbackground="#00838F",
+            selectforeground="#FFFFFF", font=("Segoe UI", 10), relief="flat", exportselection=False
+        )
+        lb_scenarios.pack(fill="both", expand=True, padx=10, pady=4)
+
+        btn_loc_row = tk.Frame(left_p, bg=self.C_CARD)
+        btn_loc_row.pack(fill="x", padx=10, pady=(4, 10))
+
+        # Right Pane: Selected Scenario Editor
+        right_p = tk.Frame(dlg, bg=self.C_CARD, highlightbackground=self.C_BORDER, highlightthickness=1)
+        right_p.pack(side="right", fill="both", expand=True, padx=(6, 12), pady=12)
+
+        top_meta = tk.Frame(right_p, bg=self.C_CARD)
+        top_meta.pack(fill="x", padx=12, pady=(10, 6))
+        lbl_editing = tk.Label(top_meta, text="Editing: --", font=("Segoe UI", 11, "bold"),
+                               fg=self.C_ACCENT_GREEN, bg=self.C_CARD)
+        lbl_editing.pack(side="left")
+
+        desc_row = tk.Frame(right_p, bg=self.C_CARD)
+        desc_row.pack(fill="x", padx=12, pady=(0, 8))
+        tk.Label(desc_row, text="Description:", font=("Segoe UI", 9), fg=self.C_MUTED, bg=self.C_CARD).pack(side="left")
+        var_desc = tk.StringVar()
+        ent_desc = tk.Entry(desc_row, textvariable=var_desc, font=("Segoe UI", 9),
+                            bg=self.C_CARD_LIGHT, fg=self.C_TEXT, insertbackground=self.C_TEXT, relief="flat")
+        ent_desc.pack(side="left", fill="x", expand=True, padx=(8, 0), ipady=3)
+
+        # Gesture Database Checklist Section
+        gest_sec = tk.LabelFrame(
+            right_p, text=" Active Gesture Database for this Location (Check to include in AI model) ",
+            font=("Segoe UI", 9, "bold"), fg=self.C_ACCENT_CYAN, bg=self.C_CARD, padx=8, pady=6
+        )
+        gest_sec.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+
+        add_word_row = tk.Frame(gest_sec, bg=self.C_CARD)
+        add_word_row.pack(fill="x", pady=(0, 6))
+        var_new_word = tk.StringVar()
+        ent_new_word = tk.Entry(add_word_row, textvariable=var_new_word, font=("Segoe UI", 9),
+                                bg=self.C_CARD_LIGHT, fg=self.C_TEXT, insertbackground=self.C_TEXT, relief="flat", width=22)
+        ent_new_word.pack(side="left", padx=(0, 6), ipady=3)
+        tk.Label(add_word_row, text="(e.g. Emergency, Doctor, Pain)", font=("Segoe UI", 8),
+                 fg=self.C_MUTED, bg=self.C_CARD).pack(side="right")
+
+        # Scrollable checkbox grid for gestures
+        chk_canvas = tk.Canvas(gest_sec, bg="#141B24", highlightthickness=0, height=160)
+        chk_scroll = ttk.Scrollbar(gest_sec, orient="vertical", command=chk_canvas.yview)
+        chk_inner = tk.Frame(chk_canvas, bg="#141B24")
+        chk_inner.bind("<Configure>", lambda e: chk_canvas.configure(scrollregion=chk_canvas.bbox("all")))
+        chk_canvas.create_window((0, 0), window=chk_inner, anchor="nw")
+        chk_canvas.configure(yscrollcommand=chk_scroll.set)
+        chk_canvas.pack(side="left", fill="both", expand=True)
+        chk_scroll.pack(side="right", fill="y")
+
+        # Staff Quick Replies Section
+        rep_sec = tk.LabelFrame(
+            right_p, text=" Staff Quick Replies (One reply per line) ",
+            font=("Segoe UI", 9, "bold"), fg=self.C_ACCENT_GREEN, bg=self.C_CARD, padx=8, pady=6
+        )
+        rep_sec.pack(fill="x", padx=12, pady=(0, 8))
+
+        txt_replies = tk.Text(rep_sec, height=5, bg="#141B24", fg=self.C_TEXT, font=("Segoe UI", 9),
+                              insertbackground=self.C_TEXT, relief="flat", padx=6, pady=4)
+        txt_replies.pack(fill="x")
+
+        # Bottom Action Buttons
+        bot_row = tk.Frame(right_p, bg=self.C_CARD)
+        bot_row.pack(fill="x", padx=12, pady=(4, 10))
+
+        state = {"current": None, "check_vars": {}}
+
+        def _commit_current_to_dict():
+            cur = state["current"]
+            if not cur or cur not in presets_data:
+                return
+            selected_gests = [w for w, var in state["check_vars"].items() if var.get()]
+            replies = [ln.strip() for ln in txt_replies.get("1.0", tk.END).splitlines() if ln.strip()]
+            presets_data[cur]["description"] = var_desc.get().strip() or cur
+            presets_data[cur]["active_gestures"] = selected_gests
+            presets_data[cur]["recommended_signs"] = selected_gests[:10]
+            presets_data[cur]["staff_replies"] = replies
+
+        def _render_checkboxes(sc_name):
+            for w in chk_inner.winfo_children():
+                w.destroy()
+            state["check_vars"].clear()
+            sc_cfg = presets_data.get(sc_name, {})
+            active_list = list(sc_cfg.get("active_gestures", sc_cfg.get("recommended_signs", [])))
+            active_lower = {g.lower() for g in active_list}
+
+            # Merge shared bank gestures + scenario-specific custom words
+            all_words = list(raw_counts.keys())
+            existing_lower = {w.lower() for w in all_words}
+            for g in active_list:
+                if g.lower() not in existing_lower:
+                    all_words.append(g)
+                    existing_lower.add(g.lower())
+            all_words.sort(key=lambda s: s.lower())
+
+            for idx, word in enumerate(all_words):
+                var = tk.BooleanVar(value=(word.lower() in active_lower))
+                state["check_vars"][word] = var
+                cnt = raw_counts.get(word, 0)
+                badge = f"({cnt} samples)" if cnt > 0 else "(Not recorded yet)"
+                fg_c = "#80D8FF" if cnt > 0 else "#FFB74D"
+                cb = tk.Checkbutton(
+                    chk_inner,
+                    text=f"{word} {badge}",
+                    variable=var,
+                    bg="#141B24",
+                    fg=fg_c,
+                    selectcolor="#1E293B",
+                    activebackground="#141B24",
+                    activeforeground="#FFFFFF",
+                    font=("Segoe UI", 9),
+                    anchor="w",
+                )
+                cb.grid(row=idx // 2, column=idx % 2, sticky="w", padx=8, pady=2)
+
+        def _load_scenario_into_editor(sc_name):
+            _commit_current_to_dict()
+            state["current"] = sc_name
+            sc_cfg = presets_data.get(sc_name, {})
+            lbl_editing.config(text=f"Editing: {sc_name}")
+            var_desc.set(sc_cfg.get("description", ""))
+            txt_replies.delete("1.0", tk.END)
+            txt_replies.insert("1.0", "\n".join(sc_cfg.get("staff_replies", [])))
+            _render_checkboxes(sc_name)
+
+        def _on_lb_select(evt=None):
+            sel = lb_scenarios.curselection()
+            if not sel:
+                return
+            name = lb_scenarios.get(sel[0])
+            if name != state["current"]:
+                _load_scenario_into_editor(name)
+
+        def _add_custom_word():
+            cur = state["current"]
+            raw_w = re.sub(r"\s+", "_", var_new_word.get().strip())
+            if not cur or not raw_w:
+                return
+            _commit_current_to_dict()
+            act = presets_data[cur].setdefault("active_gestures", [])
+            if raw_w.lower() not in {g.lower() for g in act}:
+                act.append(raw_w)
+            var_new_word.set("")
+            _render_checkboxes(cur)
+
+        def _add_location():
+            new_name = simpledialog.askstring("New Location Preset", "Enter location / scenario name (e.g. Emergency Room, Bank):", parent=dlg)
+            if not new_name or not new_name.strip():
+                return
+            new_name = new_name.strip()
+            if new_name in presets_data:
+                messagebox.showwarning("Exists", f"Scenario '{new_name}' already exists.", parent=dlg)
+                return
+            _commit_current_to_dict()
+            presets_data[new_name] = {
+                "icon": "📍",
+                "tag_color": "#00E676",
+                "description": f"Custom Location: {new_name}",
+                "staff_replies": ["Please wait a moment", "How can I help you?", "Thank you"],
+                "active_gestures": list(raw_counts.keys()),
+                "recommended_signs": list(raw_counts.keys())[:8],
+            }
+            lb_scenarios.insert(tk.END, new_name)
+            lb_scenarios.selection_clear(0, tk.END)
+            lb_scenarios.selection_set(tk.END)
+            _load_scenario_into_editor(new_name)
+
+        def _delete_location():
+            if len(presets_data) <= 1:
+                messagebox.showwarning("Cannot Delete", "At least one scenario preset must remain.", parent=dlg)
+                return
+            cur = state["current"]
+            if cur and messagebox.askyesno("Delete Scenario", f"Delete preset '{cur}'?", parent=dlg):
+                del presets_data[cur]
+                state["current"] = None
+                lb_scenarios.delete(0, tk.END)
+                for k in presets_data.keys():
+                    lb_scenarios.insert(tk.END, k)
+                lb_scenarios.selection_set(0)
+                _load_scenario_into_editor(lb_scenarios.get(0))
+
+        def _save_to_disk(retrain_after=False):
+            _commit_current_to_dict()
+            try:
+                cfg_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(cfg_file, "w", encoding="utf-8") as f:
+                    json.dump(presets_data, f, indent=2, ensure_ascii=False)
+                active_sc = state["current"] or self.selected_scenario.get()
+                self.reload_scenario_presets()
+                if active_sc in self.scenario_list:
+                    self.selected_scenario.set(active_sc)
+                    self._render_scenario_buttons()
+                self._load_model_safe()
+                if hasattr(self, "txt_dataset_info"):
+                    self._refresh_dataset_summary()
+                dlg.destroy()
+                if retrain_after:
+                    self.retrain_models_async()
+                else:
+                    self._append_to_timeline("⚙️ [System]", f"Saved preset database for [{active_sc}].", "system")
+            except Exception as e:
+                messagebox.showerror("Save Error", f"Failed to save presets:\n{e}", parent=dlg)
+
+        def _open_raw_json():
+            if cfg_file.exists():
+                try:
+                    os.startfile(str(cfg_file))
+                except Exception:
+                    subprocess.run(["notepad.exe", str(cfg_file)])
+
+        tk.Button(add_word_row, text="+ Add Word", font=("Segoe UI", 8, "bold"),
+                  bg="#00838F", fg="#FFFFFF", relief="flat", padx=8, pady=2,
+                  cursor="hand2", command=_add_custom_word).pack(side="left")
+
+        tk.Button(btn_loc_row, text="+ New", font=("Segoe UI", 8, "bold"),
+                  bg=self.C_ACCENT_GREEN, fg="#121212", relief="flat", padx=8, pady=3,
+                  cursor="hand2", command=_add_location).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        tk.Button(btn_loc_row, text="🗑 Delete", font=("Segoe UI", 8, "bold"),
+                  bg="#3B1F24", fg="#FF8A80", relief="flat", padx=8, pady=3,
+                  cursor="hand2", command=_delete_location).pack(side="right")
+
+        tk.Button(bot_row, text="📄 Raw JSON", font=("Segoe UI", 8),
+                  bg=self.C_CARD_LIGHT, fg=self.C_MUTED, relief="flat", padx=8, pady=4,
+                  cursor="hand2", command=_open_raw_json).pack(side="left")
+        tk.Button(bot_row, text="⚡ Save & Train Scenario", font=("Segoe UI", 9, "bold"),
+                  bg=self.C_ACCENT_GREEN, fg="#121212", relief="flat", padx=12, pady=4,
+                  cursor="hand2", command=lambda: _save_to_disk(retrain_after=True)).pack(side="right", padx=(6, 0))
+        tk.Button(bot_row, text="💾 Save Only", font=("Segoe UI", 9, "bold"),
+                  bg="#00838F", fg="#FFFFFF", relief="flat", padx=12, pady=4,
+                  cursor="hand2", command=lambda: _save_to_disk(retrain_after=False)).pack(side="right")
+
+        lb_scenarios.bind("<<ListboxSelect>>", _on_lb_select)
+        names = list(presets_data.keys())
+        for n in names:
+            lb_scenarios.insert(tk.END, n)
+        init_sc = self.selected_scenario.get()
+        init_idx = names.index(init_sc) if init_sc in names else 0
+        if names:
+            lb_scenarios.selection_set(init_idx)
+            _load_scenario_into_editor(names[init_idx])
 
     def _render_scenario_buttons(self):
         scenario = self.selected_scenario.get()
@@ -962,82 +1278,67 @@ class SignLanguageApp(tk.Tk):
             if words:
                 self.studio_target_word.set(words[0])
 
+    def _select_engine_locked(self, preferred_type):
+        """Selects active engine (with safe fallback) assuming self.model_lock is held."""
+        if self.predictor is None:
+            return
+        avail = self.predictor.available_engines()
+        if not avail:
+            self.lbl_model_status.config(text="● Untrained (Run training)", fg="#FF9100")
+            return
+
+        if preferred_type in avail:
+            chosen = preferred_type
+        else:
+            for cand in ("hybrid", "gru", "cnn1d", "rf_kinematic", "rf_legacy"):
+                if cand in avail:
+                    chosen = cand
+                    break
+
+        self.model_type = chosen
+        self.active_model_name.set(ENGINE_KEY_TO_NAME.get(chosen, "Hybrid (Auto-Specialist)"))
+        short = ENGINE_SHORT_NAMES.get(chosen, chosen)
+        self.lbl_model_status.config(text=f"● {short} ({len(self.id_to_label)} gestures)", fg=self.C_ACCENT_GREEN)
+        if hasattr(self, "lbl_hero_engine"):
+            self.lbl_hero_engine.config(text=f"Engine: {self.active_model_name.get()}")
+
     def _on_model_switch(self, event=None):
         name = self.active_model_name.get()
-        target_type = "gru" if "GRU" in name else "rf"
+        target_type = ENGINE_NAME_TO_KEY.get(name, "hybrid")
+        with self.model_lock:
+            if self.predictor is not None:
+                self._select_engine_locked(target_type)
+                return
         self._load_model_safe(target_type)
 
     def _load_model_safe(self, preferred_type=None):
-        """Loads trained models (PyTorch GRU or Scikit-learn RF) safely under lock."""
+        """Loads scenario-specific trained models (with automatic fallback to global models/) under lock."""
         with self.model_lock:
             try:
-                if not config.SAVED_LABELS.exists():
-                    self.lbl_model_status.config(text="● No labels found", fg=self.C_ACCENT_RED)
-                    self.classifier = None
+                scenario = self.selected_scenario.get()
+                scenario_dir = config.get_scenario_model_dir(scenario)
+                self.predictor = HybridEnsemblePredictor.load_from_disk(model_dir=scenario_dir, fallback_global=True)
+
+                if self.predictor is None or not self.predictor.available_engines():
+                    self.predictor = None
+                    self.id_to_label = {}
+                    self.lbl_model_status.config(text="● Untrained (Run training)", fg="#FF9100")
                     return
 
-                label_map = load_label_mapping(config.SAVED_LABELS)
-                self.id_to_label = {v: k for k, v in label_map.items()}
-
-                if preferred_type is None:
-                    preferred_type = self.model_type
-
-                if preferred_type == "gru" and config.SAVED_TORCH_MODEL.exists() and torch is not None:
-                    ckpt = torch.load(config.SAVED_TORCH_MODEL, map_location="cpu", weights_only=True)
-                    model = SignGRU(
-                        input_size=ckpt["input_size"],
-                        hidden_size=ckpt["hidden_size"],
-                        num_layers=ckpt["num_layers"],
-                        num_classes=ckpt["num_classes"],
-                    )
-                    model.load_state_dict(ckpt["model_state"])
-                    model.eval()
-                    self.classifier = model
-                    self.model_type = "gru"
-                    self.active_model_name.set("PyTorch GRU")
-                    self.lbl_model_status.config(text=f"● Model: GRU ({len(self.id_to_label)} gestures)", fg=self.C_ACCENT_GREEN)
-
-                elif config.SAVED_SKLEARN_MODEL.exists() and joblib is not None:
-                    self.classifier = joblib.load(config.SAVED_SKLEARN_MODEL)
-                    self.model_type = "rf"
-                    self.active_model_name.set("Random Forest")
-                    self.lbl_model_status.config(text=f"● Model: RF ({len(self.id_to_label)} gestures)", fg=self.C_ACCENT_GREEN)
-
-                else:
-                    self.classifier = None
-                    self.lbl_model_status.config(text="● Untrained (Run training)", fg="#FF9100")
+                self.id_to_label = dict(self.predictor.id_to_label)
+                target = preferred_type if preferred_type is not None else self.model_type
+                self._select_engine_locked(target)
 
             except Exception as e:
-                self.classifier = None
+                self.predictor = None
                 self.lbl_model_status.config(text=f"● Load error: {e}", fg=self.C_ACCENT_RED)
 
-    def _predict(self, seq_24x112):
-        """Predicts gesture class and confidence from (24, 112) matrix under lock."""
+    def _predict(self, raw_frames):
+        """Predicts gesture label, confidence, and matched engine from raw (T, 112) frames."""
         with self.model_lock:
-            if self.classifier is None:
-                return "Untrained Model", 0.0
-
-            if self.model_type == "rf":
-                if hasattr(self.classifier, "predict_proba"):
-                    flat = seq_24x112.reshape(1, -1)
-                    probs = self.classifier.predict_proba(flat)[0]
-                    idx = int(np.argmax(probs))
-                    label = str(self.classifier.classes_[idx])
-                    return label, float(probs[idx])
-                return "RF Not Ready", 0.0
-
-            elif self.model_type == "gru":
-                if torch is not None and hasattr(self.classifier, "__call__"):
-                    with torch.no_grad():
-                        tensor_in = torch.tensor(seq_24x112[None, ...], dtype=torch.float32)
-                        logits = self.classifier(tensor_in)
-                        probs = torch.softmax(logits, dim=-1)[0].numpy()
-                        idx = int(np.argmax(probs))
-                        label = self.id_to_label.get(idx, f"Class {idx}")
-                        return label, float(probs[idx])
-                return "GRU Not Ready", 0.0
-
-            return "Unknown", 0.0
+            if self.predictor is None:
+                return "Untrained Model", 0.0, ""
+            return self.predictor.predict(raw_frames, engine=self.model_type)
 
     # ----------------------------------------------------------------------
     # Camera Loop & Real-time State Machine
@@ -1093,6 +1394,11 @@ class SignLanguageApp(tk.Tk):
     def _arm_manual_record(self):
         self.state = "recording"
         self.rec_start_time = time.perf_counter()
+        self.still_start_time = None
+        self.rec_peak_speed = 0.0
+        self.hand_dropped_frames = 0
+        self.retrigger_move_frames = 0
+        self.prev_wrist_xy = None
         self.current_recording = []
         self._update_badge("RECORDING", self.C_ACCENT_RED)
 
@@ -1152,20 +1458,34 @@ class SignLanguageApp(tk.Tk):
                         hand_in_zone = True
                         break
 
+            # Wrist velocity tracking for dynamic early-stop & continuous segmentation
+            wrist_vec = frame_vec[10:14]
+            if self.prev_wrist_xy is not None:
+                wrist_speed = float(np.linalg.norm(wrist_vec - self.prev_wrist_xy))
+            else:
+                wrist_speed = 0.0
+            self.prev_wrist_xy = wrist_vec.copy()
+            self.wrist_speed = wrist_speed
+
             # State Transitions (Thread-Safe check of variables)
             mode = self.trigger_mode_val
             is_translation_tab = (self.active_tab_idx == 0)
 
             if self.state == "idle":
+                self.pre_roll_buffer.append(frame_vec)
                 # Auto-trigger arms only in Tab 1 (Translation) and when not in Studio mode
                 if mode == "auto" and hand_in_zone and is_translation_tab and not self.studio_recording:
                     if self.arm_start_time is None:
                         self.arm_start_time = now
                         self._update_badge("ARMING...", self.C_ACCENT_YELLOW)
-                    elif (now - self.arm_start_time) >= 0.35:
+                    elif (now - self.arm_start_time) >= 0.25:
                         self.state = "recording"
                         self.rec_start_time = now
-                        self.current_recording = [frame_vec]
+                        self.still_start_time = None
+                        self.rec_peak_speed = wrist_speed
+                        self.hand_dropped_frames = 0
+                        # Include pre-roll frames captured during arming so fast signs never lose onset
+                        self.current_recording = list(self.pre_roll_buffer)
                         self._update_badge("RECORDING", self.C_ACCENT_RED)
                 else:
                     self.arm_start_time = None
@@ -1174,39 +1494,78 @@ class SignLanguageApp(tk.Tk):
             elif self.state == "countdown":
                 # During studio countdown, auto-trigger is suppressed
                 self.arm_start_time = None
+                self.pre_roll_buffer.clear()
 
             elif self.state == "recording":
                 self.current_recording.append(frame_vec)
                 elapsed = now - self.rec_start_time
-                if elapsed >= 1.8:
+                self.rec_peak_speed = max(self.rec_peak_speed, wrist_speed)
+
+                if wrist_speed < config.WRIST_STILL_THRESHOLD:
+                    if self.still_start_time is None:
+                        self.still_start_time = now
+                else:
+                    self.still_start_time = None
+
+                self.hand_dropped_frames = (self.hand_dropped_frames + 1) if not hand_in_zone else 0
+
+                if self.studio_recording:
+                    done = elapsed >= config.MAX_SIGN_DURATION
+                else:
+                    can_early = (elapsed >= config.MIN_SIGN_DURATION) and (len(self.current_recording) >= 7)
+                    has_moved = self.rec_peak_speed >= config.WRIST_ACTIVE_PEAK_THRESHOLD
+                    still_done = has_moved and (self.still_start_time is not None) and ((now - self.still_start_time) >= config.END_HOLD_STILL_SEC)
+                    drop_done = self.hand_dropped_frames >= 4
+                    done = (elapsed >= config.MAX_SIGN_DURATION) or (can_early and (drop_done or still_done))
+
+                if done:
                     # Recording finished
                     self.state = "result"
+                    self.result_start_time = now
+                    self.retrigger_move_frames = 0
+                    self.pre_roll_buffer.clear()
                     self._update_badge("PROCESSING", self.C_ACCENT_CYAN)
 
                     # Check if this was a Studio sample recording
                     if self.studio_recording:
                         rec_frames = list(self.current_recording)
                         self.studio_recording = False
-                        # Dispatch sample save to main thread safely
                         self.after(0, self._save_studio_sample, rec_frames)
                     else:
-                        if len(self.current_recording) >= 10:
-                            seq_24 = resample_sequence(np.array(self.current_recording), target_len=config.TARGET_FRAMES)
-                            label, conf = self._predict(seq_24)
-                            self.after(0, self._on_prediction_ready, label, conf)
+                        if len(self.current_recording) >= 7:
+                            raw_seq = np.array(self.current_recording, dtype=np.float32)
+                            label, conf, detail = self._predict(raw_seq)
+                            self.after(0, self._on_prediction_ready, label, conf, detail)
                         else:
-                            self.after(0, self._on_prediction_ready, "(No motion)", 0.0)
+                            self.after(0, self._on_prediction_ready, "(No motion)", 0.0, "")
 
             elif self.state == "result":
-                # Cooldown: keep result visible for at least 1.4s
-                elapsed = now - self.rec_start_time
-                if elapsed >= 1.4:
-                    if mode == "auto":
-                        # In auto mode, wait until hand is lowered or 3.0s timeout to prevent immediate re-trigger
-                        if not hand_in_zone or elapsed >= 3.0:
-                            self.state = "idle"
-                            self.arm_start_time = None
-                    else:
+                # Anti-loop cooldown + Instant Mid-Air Re-Trigger for continuous fast signing
+                self.pre_roll_buffer.append(frame_vec)
+                cd = now - self.result_start_time
+                if mode == "auto":
+                    if not hand_in_zone and cd >= 0.35:
+                        self.state = "idle"
+                        self.arm_start_time = None
+                    elif hand_in_zone and cd >= 0.45:
+                        if wrist_speed >= 0.055:
+                            self.retrigger_move_frames += 1
+                        else:
+                            self.retrigger_move_frames = 0
+                        if self.retrigger_move_frames >= 2:
+                            # Directly transition to recording next sign mid-air (skipping 0.25s arming!)
+                            self.state = "recording"
+                            self.rec_start_time = now
+                            self.still_start_time = None
+                            self.rec_peak_speed = wrist_speed
+                            self.hand_dropped_frames = 0
+                            self.retrigger_move_frames = 0
+                            self.current_recording = list(self.pre_roll_buffer)[-4:]
+                            self._update_badge("RECORDING", self.C_ACCENT_RED)
+                        elif cd >= 1.2:
+                            self._update_badge("LOWER HAND / NEXT", self.C_MUTED)
+                else:
+                    if cd >= 0.40:
                         self.state = "idle"
 
             # Render Overlays
@@ -1291,7 +1650,7 @@ class SignLanguageApp(tk.Tk):
     # ----------------------------------------------------------------------
     # Prediction Handling & Conversation Timeline
     # ----------------------------------------------------------------------
-    def _on_prediction_ready(self, label, conf):
+    def _on_prediction_ready(self, label, conf, engine_detail=""):
         self.last_sign = label
         self.last_conf = conf
 
@@ -1314,6 +1673,9 @@ class SignLanguageApp(tk.Tk):
 
         self.lbl_hero_word.config(text=display_title, fg=display_color)
         self.lbl_conf_tag.config(text=f"Confidence: {int(conf * 100)}%")
+        if hasattr(self, "lbl_hero_engine"):
+            badge_txt = f"Matched via: {engine_detail}" if engine_detail else f"Engine: {self.active_model_name.get()}"
+            self.lbl_hero_engine.config(text=badge_txt)
 
         # Draw Confidence Bar
         self.canvas_conf_bar.delete("all")
@@ -1321,11 +1683,28 @@ class SignLanguageApp(tk.Tk):
         fill_w = int(bar_w * np.clip(conf, 0.0, 1.0))
         self.canvas_conf_bar.create_rectangle(0, 0, fill_w, 6, fill=bar_color, width=0)
 
-        # Append to Conversation Timeline and Auto-speak ONLY if confident
+        # Append to Continuous Phrase Bar, Conversation Timeline & Auto-speak if confident
         if is_confident:
-            self._append_to_timeline("🤟 [Signer]", f"{clean_label} ({int(conf * 100)}%)", "signer")
+            self.phrase_words.append(clean_label)
+            self.phrase_words = self.phrase_words[-8:]
+            if hasattr(self, "lbl_phrase_text"):
+                self.lbl_phrase_text.config(text=" ➔ ".join(self.phrase_words), fg=self.C_TEXT)
+
+            detail_tag = f"  [{engine_detail}]" if engine_detail else ""
+            self._append_to_timeline("🤟 [Signer]", f"{clean_label} ({int(conf * 100)}%){detail_tag}", "signer")
             if self.auto_speak.get():
                 speak_text_async(clean_label)
+
+    def speak_phrase(self):
+        """Speaks the entire accumulated phrase sequentially."""
+        if self.phrase_words:
+            speak_text_async(" ".join(self.phrase_words))
+
+    def clear_phrase(self):
+        """Clears the accumulated continuous phrase bar."""
+        self.phrase_words = []
+        if hasattr(self, "lbl_phrase_text"):
+            self.lbl_phrase_text.config(text="(Sign continuously to build a phrase...)", fg=self.C_MUTED)
 
     def speak_current_sign(self):
         """Manual click to speak the current hero sign."""
@@ -1402,13 +1781,24 @@ class SignLanguageApp(tk.Tk):
             self.studio_recording = True
             self.state = "recording"
             self.rec_start_time = time.perf_counter()
+            self.still_start_time = None
+            self.hand_dropped_frames = 0
+            self.prev_wrist_xy = None
             self.current_recording = []
             self._update_badge("STUDIO REC", self.C_ACCENT_RED)
 
     def _save_studio_sample(self, frames):
         """Saves recorded frames directly into data/raw/<word>/ on main thread."""
-        word = self.studio_target_word.get().strip().lower().replace(" ", "_")
+        raw_word = re.sub(r"\s+", "_", self.studio_target_word.get().strip())
         person = self.studio_person.get()
+
+        # Match existing folder casing if already present in data/raw/
+        word = raw_word
+        if config.DATA_RAW_DIR.exists():
+            for d in config.DATA_RAW_DIR.iterdir():
+                if d.is_dir() and d.name.lower() == raw_word.lower():
+                    word = d.name
+                    break
 
         if len(frames) >= 10:
             folder = config.DATA_RAW_DIR / word
@@ -1425,124 +1815,68 @@ class SignLanguageApp(tk.Tk):
         self._refresh_dataset_summary()
 
     def _refresh_dataset_summary(self):
-        """Refreshes the sample count summary in Tab 2."""
+        """Refreshes the sample count summary in Tab 2, highlighting active scenario gestures."""
         raw_dir = config.DATA_RAW_DIR
         self.txt_dataset_info.delete("1.0", tk.END)
+
+        scenario = self.selected_scenario.get()
+        active_list = self.scenario_active_gestures.get(scenario, [])
+        active_lower = {g.lower() for g in active_list}
 
         if not raw_dir.exists():
             self.txt_dataset_info.insert(tk.END, "No 'data/raw' folder found.\n")
             return
 
-        class_folders = sorted([d for d in raw_dir.iterdir() if d.is_dir()])
-        if not class_folders:
-            self.txt_dataset_info.insert(tk.END, "No gesture classes found yet in data/raw/.\n")
-            return
+        class_folders = sorted([d for d in raw_dir.iterdir() if d.is_dir()], key=lambda p: p.name.lower())
+        existing_lower = {d.name.lower() for d in class_folders}
 
         total_samples = 0
-        self.txt_dataset_info.insert(tk.END, f"{'GESTURE CLASS':<22} | {'SAMPLES':<10} | {'STATUS'}\n")
-        self.txt_dataset_info.insert(tk.END, "-" * 50 + "\n")
+        self.txt_dataset_info.insert(tk.END, f"Active Scenario: [{scenario}]\n")
+        self.txt_dataset_info.insert(tk.END, f"{'GESTURE CLASS':<18} | {'SAMPLES':<7} | {'SCENARIO SCOPE'}\n")
+        self.txt_dataset_info.insert(tk.END, "-" * 54 + "\n")
 
         for f in class_folders:
-            files = list(f.glob("*.npy"))
-            cnt = len(files)
+            cnt = len(list(f.glob("*.npy")))
             total_samples += cnt
-            status = "Ready" if cnt >= 5 else "Need more (≥5)"
-            self.txt_dataset_info.insert(tk.END, f"{f.name:<22} | {cnt:<10} | {status}\n")
+            in_sc = (not active_lower) or (f.name.lower() in active_lower)
+            scope = "★ Active" if in_sc else "Shared Bank"
+            ready = "Ready" if cnt >= 5 else "Need ≥5"
+            self.txt_dataset_info.insert(tk.END, f"{f.name:<18} | {cnt:<7} | {scope} ({ready})\n")
 
-        self.txt_dataset_info.insert(tk.END, "-" * 50 + "\n")
-        self.txt_dataset_info.insert(tk.END, f"Total Classes: {len(class_folders)} | Total Samples: {total_samples}\n")
+        # Also list gestures planned in this scenario that have 0 samples so far
+        missing_in_sc = [g for g in active_list if g.lower() not in existing_lower]
+        for g in missing_in_sc:
+            self.txt_dataset_info.insert(tk.END, f"{g:<18} | {0:<7} | ★ Active (Record / Import video)\n")
+
+        self.txt_dataset_info.insert(tk.END, "-" * 54 + "\n")
+        self.txt_dataset_info.insert(tk.END, f"Recorded Classes: {len(class_folders)} | Total Samples: {total_samples}\n")
 
     def retrain_models_async(self):
-        """Retrains Random Forest and PyTorch GRU in background thread with gradient clipping & evaluation."""
+        """Retrains global + active scenario dedicated models in background thread."""
+        scenario = self.selected_scenario.get()
         self.btn_train_models.config(state="disabled")
-        self.lbl_train_status.config(text="Training in progress... Please wait 3-5 seconds", fg=self.C_ACCENT_YELLOW)
+        self.lbl_train_status.config(
+            text=f"Training Global + [{scenario}] Hybrid models... (~6-10s)",
+            fg=self.C_ACCENT_YELLOW,
+        )
 
         def _worker():
             try:
-                # 1. Load dataset safely (skips empty directories)
-                X, y, groups, label_to_id = load_raw_dataset()
-                if len(label_to_id) < 2:
-                    self.after(0, lambda: messagebox.showwarning("Training Error", "Need at least 2 distinct gesture classes to train!"))
-                    self.after(0, self._on_train_finished, False, "Need at least 2 classes")
-                    return
+                global_res = train_all_models(verbose=False)
+                sc_res = None
+                try:
+                    sc_res = train_scenario_profile(scenario, verbose=False)
+                except Exception:
+                    sc_res = global_res
 
-                # 2. Split dataset with safe stratification
-                X_train, X_test, y_train, y_test = split_dataset(X, y, groups, test_size=0.2)
-
-                # Augment compact training sets
-                if len(X_train) < 50:
-                    X_train, y_train = augment_dataset(X_train, y_train, num_copies=1, noise_std=0.015)
-
-                # Train Random Forest
-                X_train_flat = X_train.reshape(X_train.shape[0], -1)
-                X_test_flat = X_test.reshape(X_test.shape[0], -1)
-
-                clf = RandomForestClassifier(n_estimators=100, max_depth=15, class_weight="balanced", random_state=42)
-                clf.fit(X_train_flat, y_train)
-                preds = clf.predict(X_test_flat)
-                rf_acc = accuracy_score(y_test, preds)
-
-                config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
-                joblib.dump(clf, config.SAVED_SKLEARN_MODEL)
-                save_label_mapping(label_to_id, config.SAVED_LABELS)
-
-                # 3. Train PyTorch GRU Sequence Model
-                y_encoded = np.array([label_to_id[name] for name in y], dtype=np.int64)
-                X_train_g, X_test_g, y_train_g, y_test_g = split_dataset(X, y_encoded, groups, test_size=0.2)
-                if len(X_train_g) < 50:
-                    X_train_g, y_train_g = augment_dataset(X_train_g, y_train_g, num_copies=1, noise_std=0.015)
-
-                train_ds = TensorDataset(torch.tensor(X_train_g, dtype=torch.float32), torch.tensor(y_train_g, dtype=torch.long))
-                test_ds = TensorDataset(torch.tensor(X_test_g, dtype=torch.float32), torch.tensor(y_test_g, dtype=torch.long))
-
-                loader = DataLoader(train_ds, batch_size=min(16, max(2, len(train_ds))), shuffle=True)
-                test_loader = DataLoader(test_ds, batch_size=min(16, max(2, len(test_ds))), shuffle=False)
-
-                device = torch.device("cpu")
-                model = SignGRU(input_size=config.NUM_FEATURES, hidden_size=64, num_layers=2, num_classes=len(label_to_id)).to(device)
-                optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
-                criterion = nn.CrossEntropyLoss()
-
-                best_gru_acc = 0.0
-                best_model_state = None
-
-                for epoch in range(40):
-                    model.train()
-                    for bx, by in loader:
-                        optimizer.zero_grad()
-                        out = model(bx)
-                        loss = criterion(out, by)
-                        loss.backward()
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                        optimizer.step()
-
-                    # Evaluate on test set
-                    model.eval()
-                    correct, total = 0, 0
-                    with torch.no_grad():
-                        for bx, by in test_loader:
-                            out = model(bx)
-                            correct += (out.argmax(dim=-1) == by).sum().item()
-                            total += len(by)
-                    epoch_acc = (correct / total) if total > 0 else 0.0
-
-                    if epoch_acc >= best_gru_acc or best_model_state is None:
-                        best_gru_acc = epoch_acc
-                        best_model_state = {k: v.cpu() for k, v in model.state_dict().items()}
-
-                # Save best GRU checkpoint
-                torch.save({
-                    "model_state": best_model_state or model.state_dict(),
-                    "label_to_id": label_to_id,
-                    "input_size": config.NUM_FEATURES,
-                    "hidden_size": 64,
-                    "num_layers": 2,
-                    "num_classes": len(label_to_id),
-                }, config.SAVED_TORCH_MODEL)
-
-                summary_msg = f"RF Acc: {rf_acc*100:.0f}%  |  GRU Acc: {best_gru_acc*100:.0f}%  |  {len(label_to_id)} classes ready"
+                c = sc_res["clean"]
+                r = sc_res["robust"]
+                summary_msg = (
+                    f"[{sc_res['scenario']}] Hybrid: {c['hybrid']*100:.0f}% (Rob {r['hybrid']*100:.0f}%) | "
+                    f"1D-CNN: {c['cnn1d']*100:.0f}% | GRU: {c['gru']*100:.0f}% | "
+                    f"RF-Kin: {c['rf_kinematic']*100:.0f}% ({sc_res['num_classes']} gestures)"
+                )
                 self.after(0, self._on_train_finished, True, summary_msg)
-
             except Exception as e:
                 self.after(0, self._on_train_finished, False, f"Train failed: {e}")
 

@@ -81,10 +81,8 @@ def main():
             collect_args = ["--words"] + args.words
         launch_script("collect_data.py", collect_args + unknown)
     elif args.train:
-        print("\n--- 1. Training Random Forest Baseline ---")
-        launch_script("train_sklearn.py")
-        print("\n--- 2. Training PyTorch GRU Sequence Model ---")
-        launch_script("train_torch.py")
+        print("\n--- Training All Models (RF Legacy, RF Kinematic, GRU, 1D-CNN & Hybrid Ensemble) ---")
+        launch_script("train_all.py")
     elif args.check:
         launch_script("check_camera.py", unknown)
     else:

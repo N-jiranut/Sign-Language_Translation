@@ -1,12 +1,13 @@
 """
-Train Random Forest Baseline Classifier.
-เทรนโมเดล Random Forest เพื่อจำแนกท่าทางภาษามือ
+Train Random Forest Classifiers (Legacy Flat & Kinematic Summary).
+เทรนโมเดล Random Forest ทั้งแบบเดิม (Flat 2688) และแบบ Kinematic (1008) พร้อมเปรียบเทียบผล
 """
 import sys
 from pathlib import Path
 import joblib
+import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+from sklearn.metrics import accuracy_score, classification_report
 
 _DIR = Path(__file__).resolve().parent
 for _p in (str(_DIR), str(_DIR.parent)):
@@ -14,7 +15,8 @@ for _p in (str(_DIR), str(_DIR.parent)):
         sys.path.insert(0, _p)
 
 import config
-from dataset import load_raw_dataset, split_dataset, save_label_mapping, augment_dataset
+from dataset import augment_dataset, load_raw_dataset, save_label_mapping, split_indices
+from features import extract_kinematic_batch
 
 
 def flatten_features(X):
@@ -23,72 +25,55 @@ def flatten_features(X):
 
 
 def main():
-    print("=" * 50)
-    print(" Training Random Forest Baseline Classifier ")
-    print("=" * 50)
+    print("=" * 60)
+    print(" Training Random Forest Classifiers (Legacy vs Kinematic) ")
+    print("=" * 60)
 
     try:
-        X, y, groups, label_to_id = load_raw_dataset()
+        X_trim, y, groups, label_to_id = load_raw_dataset(trim_active=True)
+        X_raw, _, _, _ = load_raw_dataset(trim_active=False)
     except Exception as e:
         print(f"[Error] Failed to load dataset: {e}")
         print("\nTip: Collect samples first using: python src/collect_data.py")
         sys.exit(1)
 
-    print(f"Total samples: {len(X)}")
-    print(f"Classes: {list(label_to_id.keys())}")
-    for name in label_to_id:
-        count = sum(y == name)
-        print(f"  - {name}: {count} samples")
-
+    print(f"Total samples: {len(X_trim)} | Classes ({len(label_to_id)}): {list(label_to_id.keys())}")
     if len(label_to_id) < 2:
         print("[Warning] Need at least 2 distinct gesture classes to train a classifier.")
         sys.exit(1)
 
-    # Train/Test Split
-    X_train, X_test, y_train, y_test = split_dataset(X, y, groups, test_size=0.2)
+    tr_idx, te_idx = split_indices(y, groups=groups, test_size=0.2, random_state=42)
+    X_trim_tr, X_trim_te = X_trim[tr_idx], X_trim[te_idx]
+    X_raw_tr, X_raw_te = X_raw[tr_idx], X_raw[te_idx]
+    y_tr, y_te = y[tr_idx], y[te_idx]
 
-    # Augment compact training sets
-    if len(X_train) < 50:
-        X_train, y_train = augment_dataset(X_train, y_train, num_copies=1, noise_std=0.015)
-        print(f"[Augmentation] Augmented training set size: {len(X_train)} samples")
-
-    # Flatten temporal dimensions for Random Forest
-    X_train_flat = flatten_features(X_train)
-    X_test_flat = flatten_features(X_test)
-
-    print(f"\nFeature vector length: {X_train_flat.shape[1]}")
-    print(f"Training on {len(X_train_flat)} samples, evaluating on {len(X_test_flat)} samples...")
-
-    clf = RandomForestClassifier(
-        n_estimators=100,
-        max_depth=15,
-        class_weight="balanced",
-        random_state=42,
-        n_jobs=-1,
-    )
-    clf.fit(X_train_flat, y_train)
-
-    # Evaluation
-    preds = clf.predict(X_test_flat)
-    acc = accuracy_score(y_test, preds)
-    print("\n" + "=" * 50)
-    print(f"Test Accuracy: {acc * 100:.2f}%")
-    print("=" * 50)
-    print("Classification Report:")
-    print(classification_report(y_test, preds, zero_division=0))
-
-    print("Confusion Matrix:")
-    labels = sorted(list(label_to_id.keys()))
-    cm = confusion_matrix(y_test, preds, labels=labels)
-    print(f"Labels: {labels}")
-    print(cm)
-
-    # Save artifacts
     config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    joblib.dump(clf, config.SAVED_SKLEARN_MODEL)
-    print(f"\n[Saved] Model saved to: {config.SAVED_SKLEARN_MODEL}")
     save_label_mapping(label_to_id, config.SAVED_LABELS)
-    print("Training completed successfully!")
+
+    # 1. Legacy Flat RF (2688 dims)
+    X_leg_tr, y_leg_tr = X_raw_tr, y_tr
+    if len(X_leg_tr) < 50:
+        X_leg_tr, y_leg_tr = augment_dataset(X_leg_tr, y_leg_tr, num_copies=1, noise_std=0.015, rich=False, seed=42)
+    rf_legacy = RandomForestClassifier(n_estimators=100, max_depth=15, class_weight="balanced", random_state=42, n_jobs=-1)
+    rf_legacy.fit(flatten_features(X_leg_tr), y_leg_tr)
+    preds_leg = rf_legacy.predict(flatten_features(X_raw_te))
+    acc_leg = accuracy_score(y_te, preds_leg)
+    joblib.dump(rf_legacy, config.SAVED_SKLEARN_MODEL)
+    print(f"[Saved] RF (Legacy Flat) -> {config.SAVED_SKLEARN_MODEL} | Test Acc: {acc_leg * 100:.2f}%")
+
+    # 2. Kinematic RF (1008 dims, rich speed/shift augmentation + trimmed motion)
+    X_aug, y_aug = X_trim_tr, y_tr
+    if len(X_aug) < 300:
+        X_aug, y_aug = augment_dataset(X_aug, y_aug, num_copies=3, noise_std=0.015, rich=True, seed=42)
+    rf_kin = RandomForestClassifier(n_estimators=150, max_depth=15, class_weight="balanced", random_state=42, n_jobs=-1)
+    rf_kin.fit(extract_kinematic_batch(X_aug), y_aug)
+    preds_kin = rf_kin.predict(extract_kinematic_batch(X_trim_te))
+    acc_kin = accuracy_score(y_te, preds_kin)
+    joblib.dump(rf_kin, config.SAVED_KINEMATIC_RF_MODEL)
+    print(f"[Saved] RF (Kinematic)   -> {config.SAVED_KINEMATIC_RF_MODEL} | Test Acc: {acc_kin * 100:.2f}%")
+
+    print("\nClassification Report (RF Kinematic):")
+    print(classification_report(y_te, preds_kin, zero_division=0))
 
 
 if __name__ == "__main__":
